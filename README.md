@@ -1,6 +1,6 @@
 # bjk-pixlik
 
-Pixel-space CMB power spectrum likelihood following Borrill, Jaffe & Knox (BJK98).
+Pixel-space CMB power spectrum likelihood following Bond, Jaffe & Knox (BJK98).
 
 Estimates bandpowers for arbitrary combinations of spin-0 (T) and spin-2 (Q+U)
 tomographic bins, including TT, TE, TB, EE, BB, and EB cross-spectra, using
@@ -99,6 +99,6 @@ These are HEALPix FITS maps covering ≈1% of the sky (Euclid RR2 tomographic bi
 
 ## Key references
 
-- Borrill (1999) / Jaffe & Knox (2003): BJK pixel-space likelihood
+- Bond, Jaffe & Knox (1998), PhysRevD 57, 2117 — https://doi.org/10.1103/PhysRevD.57.2117
 - Zaldarriaga & Seljak (1997): spin-2 harmonic conventions (App. A)
 - HEALPix: https://healpix.sourceforge.io
