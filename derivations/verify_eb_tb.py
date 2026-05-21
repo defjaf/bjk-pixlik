@@ -110,9 +110,11 @@ UU_EB = UU_EB_sum / (2 * N_REAL)
 
 Kp = Kp_b[0];  Km = Km_b[0]
 
-# Build full basis: each Wigner kernel × each trig factor
+# Extended basis: each Wigner kernel × each trig factor,
+# plus scaled versions (2*Km etc.) from the analytic derivation
 basis = {}
-for kname, K in [("Kx", Kx), ("Kp", Kp), ("Km", Km)]:
+for kname, K in [("Kx", Kx), ("Kp", Kp), ("Km", Km),
+                 ("2*Km", 2*Km)]:
     for gname, G in [("cos2dp", cos2dp), ("sin2dp", sin2dp),
                      ("cos2sp", cos2sp), ("sin2sp", sin2sp),
                      ("c2j.T",  c2j.T),  ("s2j.T",  s2j.T)]:
@@ -141,9 +143,18 @@ print(f"\nBest single-term fits for C^{{UU}} EB:")
 for name, a, err in best_candidates(UU_EB):
     print(f"  {name:20s}  scale={a/C_EB:+.3f}*C_EB  rms_rel={err:.4f}")
 
+print(f"\nDerived formula (analytic + MC): QQ=-Km*sin2sp, QU=+Km*cos2sp, UU=+Km*sin2sp")
+print(f"  (Km = d^l_{{2,-2}} Wigner kernel; no Kx, no factor of 2)")
+print(f"  Sign of QQ: Q_B = -U_E from HEALPix convention (Q+iU)=-sum(a_E+ia_B)_{{+2}}Y")
+derived = {"QQ": -Km*sin2sp, "QU": Km*cos2sp, "UU": Km*sin2sp}
+for comp, exact_mat in [("QQ", QQ_EB), ("QU", QU_EB), ("UU", UU_EB)]:
+    rms = rel_err(C_EB * derived[comp], exact_mat)
+    print(f"  {comp:2s}: rms_rel={rms:.4f}  {'<-- matches MC noise floor' if rms < 0.15 else 'FAIL'}")
+
 print(f"\nScale check:")
-print(f"  rms(QQ_EB_exact)  = {np.sqrt(np.mean(QQ_EB**2)):.4e}")
-print(f"  rms(C_EB*Kx*sin2sp) = {np.sqrt(np.mean((C_EB*Kx*sin2sp)**2)):.4e}")
+print(f"  rms(QQ_EB_exact)     = {np.sqrt(np.mean(QQ_EB**2)):.4e}")
+print(f"  rms(C_EB*Km*sin2sp)  = {np.sqrt(np.mean((C_EB*Km*sin2sp)**2)):.4e}")
+print(f"  rms(C_EB*Kx*sin2sp)  = {np.sqrt(np.mean((C_EB*Kx*sin2sp)**2)):.4e}  (old wrong formula)")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -465,6 +465,40 @@ def test_gradient_fd_T2P1():
 
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Test 11: EB covariance symmetry + gradient FD check
+# ---------------------------------------------------------------------------
+
+def test_eb_kernel():
+    print("\nTest 11: EB covariance symmetry and gradient FD check (include_EB=True)")
+    _, Q, U = synfast_TP(NSIDE, CL_TT_TRUE, CL_EE_TRUE, CL_BB_TRUE, CL_TE_TRUE, seed=13)
+    obs_pix = np.arange(NPIX)
+    N_P_arr = np.full(NPIX, SIGMA_P**2 * OMEGA)
+
+    lik = PixelLikelihood.from_arrays(
+        d_T_list=[], d_Q_list=[Q], d_U_list=[U],
+        obs_pix=obs_pix, nside=NSIDE,
+        N_T_list=[], N_Q_list=[N_P_arr], N_U_list=[N_P_arr],
+        lmin=2, lmax=LMAX, band_edges=BAND_EDGES,
+        include_EB=True)
+
+    layout = lik.layout
+    cl = np.zeros(layout.n_params)
+    C_EB_val = 0.3e-6   # sub-unity EB (must keep matrix PSD)
+    for b in range(lik.nbands):
+        ells = np.arange(BAND_EDGES[b], BAND_EDGES[b+1])
+        cl[layout.index('EE', 0, 0, b)] = CL_EE_TRUE[ells].mean()
+        cl[layout.index('BB', 0, 0, b)] = CL_BB_TRUE[ells].mean()
+        cl[layout.index('EB', 0, 0, b)] = C_EB_val
+
+    C = lik.build_signal_cov(cl)
+    check("EB: signal cov symmetric", np.allclose(C, C.T, atol=1e-14),
+          f"max |C-C^T| = {np.abs(C - C.T).max():.2e}")
+    check("EB: signal cov PSD",
+          np.linalg.eigvalsh(C + np.diag(np.full(C.shape[0], SIGMA_P**2 * OMEGA))).min() >= 0)
+    _gradient_fd_check("  EB FD", lik, cl)
+
+
 if __name__ == '__main__':
     test_gradient_fd()
     test_cov_symmetry()
@@ -476,6 +510,7 @@ if __name__ == '__main__':
     test_recovery_joint()
     test_gradient_fd_P2()
     test_gradient_fd_T2P1()
+    test_eb_kernel()
 
     print()
     if _FAILURES:

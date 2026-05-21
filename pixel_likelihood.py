@@ -297,9 +297,9 @@ def _spin2_cov_block(Kp_b, Km_b, Kx_b, geom, cEE, cBB=0.0, cEB=0.0):
     UU += cBB * (Kp_b * cos2dp + Km_b * cos2sp)
 
     if cEB != 0.0:
-        QQ += cEB * Kx_b * sin2sp
-        QU += cEB * Kx_b * cos2sp
-        UU -= cEB * Kx_b * sin2sp
+        QQ -= cEB * Km_b * sin2sp
+        QU += cEB * Km_b * cos2sp
+        UU += cEB * Km_b * sin2sp
 
     return np.block([[QQ, QU], [QU.T, UU]])
 
@@ -326,19 +326,18 @@ def _bb_kernel(Kp_b, Km_b, geom):
     return np.block([[QQ, QU], [QU.T, UU]])
 
 
-def _eb_kernel(Kx_b, geom):
+def _eb_kernel(Km_b, geom):
     """EB derivative kernel: d(C_PP)/d(C^EB_b), shape (2n, 2n).
 
-    WARNING: This formula is UNVERIFIED. MC verification in
-    derivations/verify_eb_tb.py shows that no simple single-term
-    combination of Kx/Kp/Km × trig-angle matrices matches the
-    empirical EB covariance; the correct formula is still unknown.
-    Do not use EB parameters in production until this is resolved.
+    Derived from the HEALPix spin-2 convention (Q+iU) = -sum (a_E+ia_B) _{+2}Y:
+    B-mode maps satisfy Q_B = -U_E (the -i factor introduces a sign flip vs E).
+    Only the d^l_{2,-2} (Km) Wigner kernel with sum angles contributes; d^l_{2,0}
+    (Kx) does not appear.  MC-verified in derivations/verify_eb_tb.py.
     """
     _, _, cos2sp, sin2sp, _, _ = geom
-    QQ =  Kx_b * sin2sp
-    QU =  Kx_b * cos2sp
-    UU = -Kx_b * sin2sp
+    QQ = -Km_b * sin2sp
+    QU =  Km_b * cos2sp
+    UU =  Km_b * sin2sp
     return np.block([[QQ, QU], [QU.T, UU]])
 
 
@@ -717,7 +716,7 @@ class PixelLikelihood:
             elif spec == 'EB':
                 sj = self._P_slice(i)
                 sk = self._P_slice(j)
-                blk = _eb_kernel(self._Kx[b], geom)  # (2n, 2n)
+                blk = _eb_kernel(self._Km[b], geom)  # (2n, 2n)
                 K[sj, sk] = blk
                 if i != j:
                     K[sk, sj] = blk.T

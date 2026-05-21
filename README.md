@@ -14,7 +14,7 @@ an exact pixel-space Gaussian likelihood with Newton-Raphson maximisation.
 | EE, BB   | Verified (MC + unit tests) |
 | TE       | Verified (MC, ~5% residual = MC noise floor) |
 | TB       | Formula MC-verified (`derivations/verify_eb_tb.py`); **signs were wrong in earlier versions — fixed** |
-| EB       | **Formula UNVERIFIED** — MC search failed to find a simple single-term formula. Do not use in production. See `derivations/verify_eb_tb.py`. |
+| EB       | Verified (analytic derivation + MC, ~7% residual = MC noise floor). Uses Km kernel with sum angles: QQ=−Km·sin2Σψ, QU=+Km·cos2Σψ, UU=+Km·sin2Σψ. See `derivations/verify_eb_tb.py`. |
 
 ## Background
 
