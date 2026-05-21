@@ -496,6 +496,7 @@ class PixelLikelihood:
         # else: caller (from_arrays) sets self.d, self.N_diag, self.obs_pix, self.nside, self.n_obs
 
     def _load_fits(self, data_fits, ninv_fits, N_matrix):
+        import warnings
         raw_data = hp.read_map(data_fits, field=None, verbose=False)
         raw_ninv = hp.read_map(ninv_fits, field=None, verbose=False)
         if raw_data.ndim == 1:
@@ -510,19 +511,52 @@ class PixelLikelihood:
         self.n_obs   = len(self.obs_pix)
         print(f"Observed pixels: {self.n_obs}  (f_sky = {self.n_obs/npix:.4f})")
 
+        # Detect ninv format: diagonal (n_f fields) or precision matrix (n_f*(n_f+1)//2 fields).
+        # Almanac writes precision matrices, so for EE (n_T=0, n_P=1) ninv has 3 fields:
+        # [N^{-1}_{QQ}, N^{-1}_{QU}, N^{-1}_{UU}], not 2.  Using the wrong field (QU=0
+        # instead of UU) would give infinite U noise.
+        n_f    = self.n_T + 2 * self.n_P
+        n_diag = n_f
+        n_prec = n_f * (n_f + 1) // 2
+        n_ninv = raw_ninv.shape[0]
+
+        if n_ninv == n_prec and n_prec > n_diag:
+            is_prec = True
+            # Upper-triangle row-major: diagonal element k is at field k*n_f - k*(k-1)//2
+            def _diag_field(k):
+                return k * n_f - k * (k - 1) // 2
+            # Warn if any off-diagonal field is non-zero over observed pixels
+            diag_set = {_diag_field(k) for k in range(n_f)}
+            for fi in range(n_prec):
+                if fi not in diag_set and np.any(raw_ninv[fi][self.obs_pix] != 0):
+                    warnings.warn(
+                        f"ninv FITS field {fi} contains non-zero off-diagonal precision "
+                        f"elements. Correlated pixel noise is not yet supported; these "
+                        f"off-diagonal terms will be ignored.",
+                        UserWarning, stacklevel=2)
+                    break
+        elif n_ninv == n_diag:
+            is_prec = False
+            def _diag_field(k):
+                return k
+        else:
+            raise ValueError(
+                f"ninv FITS has {n_ninv} fields; expected {n_diag} (diagonal noise) "
+                f"or {n_prec} (precision matrix) for n_T={self.n_T}, n_P={self.n_P}")
+
         # T maps: fields 0 .. n_T-1
         # P maps: fields n_T, n_T+1, ...  in pairs (Q_0,U_0,Q_1,U_1,...)
         dlist, nlist = [], []
         for i in range(self.n_T):
             dlist.append(raw_data[i][self.obs_pix])
-            nlist.append(1.0 / raw_ninv[min(i, raw_ninv.shape[0]-1)][self.obs_pix])
+            nlist.append(1.0 / raw_ninv[_diag_field(i)][self.obs_pix])
         for j in range(self.n_P):
-            qi = self.n_T + 2*j
-            ui = self.n_T + 2*j + 1
+            qi = self.n_T + 2 * j
+            ui = self.n_T + 2 * j + 1
             dlist.append(raw_data[qi][self.obs_pix])
             dlist.append(raw_data[ui][self.obs_pix])
-            nlist.append(1.0 / raw_ninv[min(qi, raw_ninv.shape[0]-1)][self.obs_pix])
-            nlist.append(1.0 / raw_ninv[min(ui, raw_ninv.shape[0]-1)][self.obs_pix])
+            nlist.append(1.0 / raw_ninv[_diag_field(qi)][self.obs_pix])
+            nlist.append(1.0 / raw_ninv[_diag_field(ui)][self.obs_pix])
 
         self.d = np.concatenate(dlist)
         self.N_diag = np.concatenate(nlist)
@@ -557,9 +591,10 @@ class PixelLikelihood:
 
         # Noise matrix
         if self._N_matrix is not None:
-            self.N_mat = self._N_matrix
-        else:
-            self.N_mat = np.diag(self.N_diag)
+            raise NotImplementedError(
+                "N_matrix is not yet supported. Pass per-pixel diagonal noise via "
+                "N_Q_list/N_U_list (from_arrays) or a FITS ninv map (_load_fits).")
+        self.N_mat = np.diag(self.N_diag)
 
         print("Done.")
 
