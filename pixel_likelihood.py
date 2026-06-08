@@ -66,10 +66,17 @@ def _build_scalar_kernels(obs_pix, nside, lmin, lmax, band_edges, beam2,
 
     vx, vy, vz = hp.pix2vec(nside, obs_pix)
     vec = np.column_stack([vx, vy, vz])
-    cos_theta = np.clip(vec @ vec.T, -1.0, 1.0).ravel()
+    n = len(obs_pix)
+
+    # Exploit pixelisation regularity: many pixel pairs share the same cos θ.
+    # Run the Legendre recurrence only on unique values, then expand.
+    cos_theta_full = np.clip(vec @ vec.T, -1.0, 1.0).ravel()
+    unique_ct, inverse = np.unique(cos_theta_full, return_inverse=True)
+    inverse = inverse.astype(np.int32)   # halve index memory
+    del cos_theta_full
 
     nbands = len(band_edges) - 1
-    kernels = [np.zeros(len(cos_theta)) for _ in range(nbands)]
+    kernels = [np.zeros(len(unique_ct)) for _ in range(nbands)]
 
     def _add(l, Pl):
         if l < lmin or l > lmax:
@@ -78,7 +85,7 @@ def _build_scalar_kernels(obs_pix, nside, lmin, lmax, band_edges, beam2,
         if 0 <= b < nbands:
             kernels[b] += (2*l + 1) / (4*np.pi) * beam2[l] * ell_weights[l] * Pl
 
-    x = cos_theta
+    x = unique_ct
     Pl_prev = np.ones_like(x)
     Pl_curr = x.copy()
     _add(0, Pl_prev)
@@ -88,8 +95,7 @@ def _build_scalar_kernels(obs_pix, nside, lmin, lmax, band_edges, beam2,
         _add(l, Pl_next)
         Pl_prev, Pl_curr = Pl_curr, Pl_next
 
-    n = len(obs_pix)
-    return [k.reshape(n, n) for k in kernels]
+    return [k[inverse].reshape(n, n) for k in kernels]
 
 
 # ===========================================================================
