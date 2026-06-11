@@ -36,6 +36,23 @@ Each group repeated for nbands, so parameter layout is:
 Memory: O(N_d^2).  For n_T=n_P=6, n_obs~2000: N_d~36000; N_d^2~1e9 doubles ~8 GB.
 For n_T=n_P<=2 or n_obs<=~500, comfortably under 16 GB.
 
+** MEMORY WARNING for spin-2 multi-field (n_P >= 1, include_EB=True) **
+With N_d = 2*n_obs and n_params kernels, all kernel matrices are allocated upfront:
+  n_params × N_d² × 8 bytes.
+Example: n_P=1, include_EB=True, 7 bands → 21 kernels × (2×4900)² × 8 ≈ 16 GB stored,
+plus substantial temporary arrays during kernel construction — peak RAM usage can
+exceed 50 GB at NSIDE=64/fsky=0.1.  On a 64 GB machine this will OOM.
+
+Mitigation options:
+  1. Reduce NSIDE (NSIDE=32 → n_obs ≈ 1000 → ~1 GB total).
+  2. On-the-fly kernels: build each kernel inside gradient_and_fisher and discard
+     immediately.  Reduces peak to ~2 GB at the cost of ~30 rebuilds per Newton run.
+     This fix is NOT yet implemented.
+
+** MULTI-FIELD STATUS: run_bjk_nmt.py wiring for --include-eb is written but UNTESTED **
+(crashed with OOM before completing a single Newton iteration, June 2026).
+Single-field TT and EE/BB (without include_EB) are validated and production-ready.
+
 Complexity per Newton-Raphson iteration: O(n_params * N_d^3) dominated by the
 triangular solves to form A_b = L^{-1} K_b (L^{-1})^T for each kernel K_b.
 """
