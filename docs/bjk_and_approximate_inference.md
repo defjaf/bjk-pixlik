@@ -77,7 +77,9 @@ convergence**, with the Laplace covariance as its posterior width.
 
 Almanac samples the posterior directly with HMC, making no Gaussian assumption,
 so it captures exactly the non-Gaussianity that the BJK Fisher-Gaussian omits.
-Two empirical consequences, consistent with the picture above:
+Two empirical consequences, consistent with the picture above (all established
+**in simulations** — fsky=1 and fsky=0.5 flat-spectrum runs; no real-data
+BJK/Almanac comparison has been completed):
 
 - Under a flat prior the **BJK MLE equals the Almanac posterior mode** (recovered
   as the half-sample mode of the bandpower samples). The peak-finder and the
