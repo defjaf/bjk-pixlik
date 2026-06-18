@@ -105,13 +105,75 @@ itself Gaussian; otherwise their covariances differ. BJK is best described as th
 Laplace/variational-Laplace point of the spectrum, equivalent to Gaussian VI in
 the Gaussian limit.
 
+## 6. Possible extensions / modifications to consider
+
+Motivated by the picture above and by the multi-field, low-fsky regime.
+
+### (a) A matrix band-power likelihood that handles cross-spectra
+
+The offset-lognormal band-power form (Bond–Jaffe–Knox 2000), `z_b = ln(θ_b + N_b)`,
+makes the Gaussian approximation in a coordinate where the auto-power posterior is
+nearly Gaussian and the `C_ℓ ≥ 0` boundary is respected, with the offset `N_b` set
+by the per-band **noise floor** (which the rotation/Gaussian noise runs measure
+directly). **But it is intrinsically an auto-spectrum form** — a cross-spectrum is
+signed and has no positivity boundary, so a log transform is ill-defined. Two ways
+to handle a full multi-field (E/B + tomographic) matrix:
+
+- **Simplest:** offset-lognormal for the auto-spectra, Gaussian for the
+  cross-spectra. Pragmatic, but treats matrix elements inconsistently and ignores
+  the joint positive-definiteness constraint linking them.
+
+- **Robust (recommended): the Hamimeche–Lewis (2008) transform.** It works on the
+  whole `n_field × n_field` band-power matrix rather than element-by-element. Per
+  band, form
+  ```
+  X = vecp[ C_f^{1/2} · g( C^{-1/2} Ĉ C^{-1/2} ) · C_f^{1/2} ],
+      g(x) = sign(x − 1) · sqrt( 2 (x − ln x − 1) )   (applied to eigenvalues)
+  ```
+  with `C` the model matrix, `Ĉ` the estimate, `C_f` a fiducial; then
+  `−2 ln L ≈ Xᵀ M_f^{-1} X`, with `M_f` the fiducial band-power covariance. Because
+  the transform acts on the matrix, **cross-spectra are handled automatically** and
+  the enforced constraint is positive-definiteness of the *whole matrix* (not
+  positivity of each element) — exactly what E/B + tomographic cross-spectra need.
+  It is exact for a single mode (Wishart) and stays accurate into the few-modes
+  regime, i.e. our low-fsky case. Cross-spectrum / low-ℓ extensions:
+  Mangilli, Plaszczyński & Tristram (2015).
+
+  *Connections:* `M_f` is just the Fisher covariance BJK already computes; the
+  fiducial offset plays the role of the measured per-band noise floor; and the
+  matrix structure is the analytic-Gaussian counterpart of Almanac's log-Cholesky
+  positive-definite band-power matrices `Θ_b` — H&L is, in effect, the Gaussian
+  approximation to what Almanac samples exactly.
+
+### (b) Robust (sandwich) covariance for the error bars
+
+`F⁻¹` is the correct covariance only if the model — including the noise — is exactly
+right. We have *measured* that it isn't (the ~19% gap between the rotation-noise
+realization and the diagonal `1/Σw` model). A sandwich estimator
+`Σ = F⁻¹ J F⁻¹` (with `J` the variance of the score) is robust to mild noise-model
+misspecification. The Fisher remains the right object for the *iteration* (its
+PD-by-construction stability); the sandwich is for the reported *covariance*.
+
+### (c) Be deliberate about constraining — don't import the positivity bias
+
+The positivity bias is a property of the *constrained Bayesian posterior* (Almanac),
+not of the BJK ML estimate. The unconstrained ML band-power can go negative and is,
+to leading order, **unbiased** — which is what a downstream Gaussian/`χ²`
+cosmological likelihood wants as input. So keep the ML estimate unconstrained
+(signed) for downstream inputs, and use the matrix-transform / offset posterior only
+when a standalone positive spectrum or detection statement is wanted. "Fixing" BJK by
+clamping to `θ ≥ 0` would *introduce* the bias, not remove it.
+
 ## Pointers
 
 - Bond, Jaffe & Knox (1998) — iterative quadratic / Newton–Raphson ML power-spectrum estimation.
+- Bond, Jaffe & Knox (2000) — offset-lognormal band-power likelihood ("radical compression").
+- Hamimeche & Lewis (2008) — matrix-transform quasi-Gaussian likelihood for the full C_ℓ matrix (handles cross-spectra & matrix positivity).
+- Mangilli, Plaszczyński & Tristram (2015) — cross-spectrum / low-ℓ extension of the H&L-type approximation.
 - Fisher scoring / method of scoring — expected vs observed information in ML iteration.
 - Opper & Archambeau — the Gaussian variational approximation.
 - Khan & Lin and collaborators — natural-gradient variational inference; Newton/Fisher-scoring-like updates.
 - Friston et al. — variational Laplace (free-energy formulation of the Laplace approximation).
 - Bernstein–von Mises — asymptotic Gaussianity of the posterior about the MLE.
 
-*(Bibliographic details to be filled in; author/concept pointers only.)*
+*(Bibliographic details/years to be verified; author/concept pointers only.)*
