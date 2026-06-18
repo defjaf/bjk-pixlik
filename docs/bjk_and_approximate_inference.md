@@ -145,6 +145,30 @@ to handle a full multi-field (E/B + tomographic) matrix:
   positive-definite band-power matrices `Θ_b` — H&L is, in effect, the Gaussian
   approximation to what Almanac samples exactly.
 
+  *Bandpower form and a common-bands requirement.* These approximations extend
+  directly to **bandpowers**: apply the g-transform to the binned matrices `Ĉ_b`
+  and use a band-power covariance `M_f` carrying the band–band (mode-coupling) and
+  field–field correlations. Binning only lowers the effective modes per band `ν_b`;
+  the g-function is precisely what keeps the transformed variable near-Gaussian as
+  `ν_b` falls, so the binned form stays valid in the few-modes / low-fsky regime
+  (this is how XFaster and the binned Planck high-ℓ likelihoods are built).
+  **However, the matrix (H&L) form requires the same band partition for *all*
+  fields — every tomographic bin and both E and B.** The transform acts on the
+  `n_field × n_field` matrix *at a fixed band* (via `C_b^{-1/2}`, its
+  eigendecomposition, and `g` on the eigenvalues), and the constraint it enforces —
+  positive-definiteness — is a property of that cross-field matrix at each band. So
+  a single, common ℓ-band shared by every field-pair is needed to form it; binning
+  must act identically on all field-pairs. Band *widths* may vary with band index
+  (variable binning in ℓ), and the in-band weighting (flat-in-`C_ℓ` vs `D_ℓ`, etc.)
+  may be chosen, but both must be common across fields. Giving different bins/fields
+  *different band edges* breaks the band-level matrix and the cross-spectra — it
+  only "works" in the degenerate auto-only (offset-lognormal, diagonal) case, which
+  discards exactly the cross-spectra and matrix structure H&L provides. If different
+  effective resolution per bin is wanted, keep a common (fine) band grid and let
+  `M_f` / the weighting downweight the noisy bins, rather than using per-field bands.
+  (Almanac already satisfies this: one PD `Θ_b` per band with `bandedges` shared
+  across all 12 fields.)
+
 ### (b) Robust (sandwich) covariance for the error bars
 
 `F⁻¹` is the correct covariance only if the model — including the noise — is exactly
