@@ -201,6 +201,12 @@ When working across both repositories:
 - Simulation comparisons: `~/Desktop/Projects/Almanac/Euclid-Almanac/sim_runs/run_bjk_*.py`
 - Diagnostic plots: `~/Desktop/Projects/Almanac/Euclid-Almanac/sim_runs/diag_bjk_*.py`
 
+**Historical implementations (1990s Fortran, archival):**
+- `~/home/cmb/quadest/quadest.f` — Original quadratic estimator (1997)
+- `~/home/cmb/code/diag_StoNmat_pspec.f` — Diagonal approximation for CMB experiments (1995-1997)
+- `~/home/cmb/code/dmr_diag_StoNmat_pspec.f` — DMR-specific diagonal likelihood
+- `~/home/cmb/bandpow/bandpow_main.f` — Bandpower compression framework (1999)
+
 **Note:** Scripts in the Almanac directory import `pixel_likelihood` by adding the BJK repo to `sys.path`, e.g.:
 ```python
 _BJK_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -208,3 +214,28 @@ _BJK_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 sys.path.insert(0, _BJK_DIR)
 from pixel_likelihood import PixelLikelihood
 ```
+
+## Evolution from Historical Code
+
+The current `pixel_likelihood.py` is a clean modern reimplementation of ideas from the 1990s Fortran codes:
+
+**Original implementations (1995-1999):**
+- `quadest.f`: Implemented quadratic estimator with Fisher matrix iteration
+- `diag_StoNmat_pspec.f`: Diagonal approximation using eigenmode decomposition
+- Used LAPACK for Cholesky decomposition (`DPOTRF`, `DTRSM`)
+- Explicit S+N covariance matrix construction in Fortran 77
+- Heavy use of shell scripts for iteration and data management
+
+**Current Python implementation (2026):**
+- Same mathematical core: `-2 ln L = d^T M^{-1} d + ln|M|` with `M = S(C) + N`
+- Same Newton-Raphson iteration: `δ = F^{-1} g` where `F = ½ Tr[A_b A_b']`
+- Uses `scipy.linalg.solve_triangular` instead of LAPACK directly
+- Modern HEALPix integration via `healpy`
+- Generalized multi-field support (arbitrary n_T × n_P tomographic bins)
+- Cleaner parameter layout with `SpectraLayout` class
+- Direct support for spin-2 kernels (Wigner d-matrices) vs original scalar-only
+
+**Key differences:**
+- Original code used band-diagonal approximations for speed; current code builds full `O(N_d^2)` kernels
+- Original split across many Fortran files + shell scripts; current is self-contained single module
+- Original focused on COBE DMR and ground-based experiments; current handles modern HEALPix partial-sky data
