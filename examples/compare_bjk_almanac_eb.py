@@ -24,9 +24,8 @@ BJK_DIR = os.path.join(ALMANAC_DIR, 'bjk_results')
 
 # Input files
 BJK_DAT = os.path.join(BJK_DIR, f'bjk_euclid_tombin{TOMBIN}_nside{NSIDE}_eb_n1.dat')
-ALM_DIR = os.path.join(ALMANAC_DIR, f'results_tombin{TOMBIN}_nside{NSIDE}')
-ALM_CL  = os.path.join(ALM_DIR, 'almanac_out_2_anafast_cl.dat')  # [ell, EE, EB, BB]
-ALM_SIG = os.path.join(ALMANAC_DIR, f'euclid_rr2_tombin{TOMBIN}_nside{NSIDE}_bandpower_v1_sigmaCls.dat')
+ALM_RUN = f'euclid_rr2_tombin{TOMBIN}_nside{NSIDE}_bandpower_v1'
+ALM_ELLIP = os.path.join(ALMANAC_DIR, f'{ALM_RUN}.ellip.extract.npy')
 
 # Output
 OUT_PNG = os.path.join(BJK_DIR, f'compare_bjk_almanac_tombin{TOMBIN}_nside{NSIDE}_eb.png')
@@ -57,36 +56,54 @@ def load_bjk_results(filename):
     return result
 
 
-def load_almanac_results(cl_file, sig_file):
+def load_almanac_bandpowers(ellip_file):
     """
-    Load Almanac results.
+    Extract bandpowers from Almanac ellip.extract.npy file.
 
-    cl_file: anafast output [ell, EE, EB, BB]
-    sig_file: posterior std [ell, EE, EB, BB]
+    Almanac stores bandpowers in Cholesky (ellip) parameterization:
+    - Multi-field nf=2: 3 params per band (λ_EE, λ_EB, λ_BB)
+    - Conversion:
+        θ_EE = exp(2*λ_00)
+        θ_EB = λ_10 * exp(λ_00)
+        θ_BB = λ_10² + exp(2*λ_11)
     """
-    # Load full-resolution C_ell from Almanac
-    alm = np.loadtxt(cl_file, delimiter=',')
-    ells = alm[:, 0].astype(int)
-    cl_alm = {'EE': alm[:, 1], 'EB': alm[:, 2], 'BB': alm[:, 3]}
+    print(f"Loading Almanac bandpowers from: {ellip_file}")
+    ellip = np.load(ellip_file)  # (nsamples, nbands * 3)
+    print(f"  Shape: {ellip.shape}")
 
-    # Load posterior std
-    sig_alm_full = np.loadtxt(sig_file, delimiter=',')
-    sig_alm = {'EE': sig_alm_full[:, 1], 'EB': sig_alm_full[:, 2], 'BB': sig_alm_full[:, 3]}
+    nsamples = ellip.shape[0]
+    nbands = len(BAND_EDGES) - 1
+    nparams_per_band = 3  # EE, EB, BB
 
-    # Bin to match BJK bands
-    def bin_spectrum(cl_full, sig_full):
-        cl_binned = np.array([cl_full[(ells >= lo) & (ells < hi)].mean()
-                              for lo, hi in zip(BAND_EDGES[:-1], BAND_EDGES[1:])])
-        # Bin uncertainties: sigma_bin = sqrt(sum(sigma_ell^2)) / n_ell
-        sig_binned = np.array([np.sqrt(np.sum(sig_full[(ells >= lo) & (ells < hi)]**2))
-                               / np.sum((ells >= lo) & (ells < hi))
-                               for lo, hi in zip(BAND_EDGES[:-1], BAND_EDGES[1:])])
-        return cl_binned, sig_binned
+    if ellip.shape[1] != nbands * nparams_per_band:
+        raise ValueError(f"Expected {nbands * nparams_per_band} columns, got {ellip.shape[1]}")
 
-    result = {}
-    for spec in ['EE', 'BB', 'EB']:
-        cl_b, sig_b = bin_spectrum(cl_alm[spec], sig_alm[spec])
-        result[spec] = {'ell': ell_b, 'cl': cl_b, 'sigma': sig_b}
+    # Convert from λ to θ (bandpower) space
+    theta_samples = np.zeros((nsamples, nbands, 3))  # (samples, bands, [EE, EB, BB])
+
+    for b in range(nbands):
+        offset = b * nparams_per_band
+        lam_ee = ellip[:, offset + 0]     # λ(0,0)
+        lam_eb = ellip[:, offset + 1]     # λ(1,0)
+        lam_bb = ellip[:, offset + 2]     # λ(1,1)
+
+        theta_ee = np.exp(2.0 * lam_ee)
+        theta_eb = lam_eb * np.exp(lam_ee)
+        theta_bb = lam_eb**2 + np.exp(2.0 * lam_bb)
+
+        theta_samples[:, b, 0] = theta_ee
+        theta_samples[:, b, 1] = theta_eb
+        theta_samples[:, b, 2] = theta_bb
+
+    # Compute posterior statistics
+    theta_mean = theta_samples.mean(axis=0)  # (nbands, 3)
+    theta_std = theta_samples.std(axis=0)
+
+    result = {
+        'EE': {'ell': ell_b, 'cl': theta_mean[:, 0], 'sigma': theta_std[:, 0]},
+        'EB': {'ell': ell_b, 'cl': theta_mean[:, 1], 'sigma': theta_std[:, 1]},
+        'BB': {'ell': ell_b, 'cl': theta_mean[:, 2], 'sigma': theta_std[:, 2]},
+    }
 
     return result
 
@@ -140,13 +157,10 @@ def main():
         return
     bjk = load_bjk_results(BJK_DAT)
 
-    print(f"Loading Almanac results from:")
-    print(f"  C_ell: {ALM_CL}")
-    print(f"  σ_ell: {ALM_SIG}")
-    if not os.path.exists(ALM_CL):
-        print(f"ERROR: Almanac results not found!")
+    if not os.path.exists(ALM_ELLIP):
+        print(f"ERROR: Almanac results not found at: {ALM_ELLIP}")
         return
-    alm = load_almanac_results(ALM_CL, ALM_SIG)
+    alm = load_almanac_bandpowers(ALM_ELLIP)
 
     # Compute chi-square
     print("\n" + "="*70)
