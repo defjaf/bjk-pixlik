@@ -409,9 +409,18 @@ class SpectraLayout:
             offset += len(self._pairs[s]) * nbands
         self._n_params = offset
 
+        # Build decode cache: idx -> (spec, i, j, b)
+        self._decode_cache = {}
+        for idx, spec, i, j, b in self.entries():
+            self._decode_cache[idx] = (spec, i, j, b)
+
     @property
     def n_params(self):
         return self._n_params
+
+    def decode(self, idx):
+        """Return (spec, i, j, b) for flat index idx."""
+        return self._decode_cache[idx]
 
     def index(self, spec, i, j, b):
         """Return flat index for (spec, bin_i, bin_j, band_b).
@@ -472,6 +481,7 @@ class PixelLikelihood:
                  n_T=1, n_P=0, beam=None, band_model='Cl',
                  include_TB=False, include_EB=False,
                  N_matrix=None,
+                 kernel_mode='auto',
                  # backward-compat
                  nfields=None, spin=None, ntomo=None, ell_weights=None):
 
@@ -493,6 +503,10 @@ class PixelLikelihood:
         self.n_P    = n_P
         self.include_TB = include_TB
         self.include_EB = include_EB
+
+        if kernel_mode not in ('precompute', 'onthefly', 'auto'):
+            raise ValueError(f"kernel_mode must be 'precompute', 'onthefly', or 'auto', got {kernel_mode!r}")
+        self.kernel_mode = kernel_mode
 
         self.beam2 = np.ones(lmax + 1) if beam is None else np.asarray(beam)[:lmax+1]**2
 
@@ -586,6 +600,43 @@ class PixelLikelihood:
         self._N_matrix = N_matrix
         self._finish_init()
 
+    def _estimate_kernel_memory_gb(self, n_params):
+        """Estimate memory needed for all kernel matrices."""
+        Nd = (self.n_T + 2 * self.n_P) * self.n_obs
+        kernel_gb = n_params * Nd**2 * 8 / 1e9
+        return kernel_gb
+
+    def _detect_available_memory_gb(self):
+        """Detect available RAM with safety margin."""
+        try:
+            import psutil
+            mem = psutil.virtual_memory()
+            available_gb = mem.available / 1e9
+            safe_available = available_gb * 0.8
+            return safe_available
+        except ImportError:
+            print("Warning: psutil not installed, cannot detect memory. "
+                  "Defaulting to onthefly mode for safety.")
+            return 0.0
+
+    def _choose_kernel_mode(self, n_params):
+        """Auto-select kernel mode based on resources."""
+        kernel_mem = self._estimate_kernel_memory_gb(n_params)
+        available_mem = self._detect_available_memory_gb()
+
+        total_needed = kernel_mem * 2.0
+
+        if total_needed < available_mem:
+            mode = 'precompute'
+            print(f"Auto mode: precompute ({kernel_mem:.1f} GB kernels, "
+                  f"{available_mem:.1f} GB available)")
+        else:
+            mode = 'onthefly'
+            print(f"Auto mode: onthefly ({total_needed:.1f} GB needed, "
+                  f"{available_mem:.1f} GB available)")
+
+        return mode
+
     def _finish_init(self):
         """Build kernels and layout after d, N_diag, obs_pix, nside, n_obs are set."""
         n = self.n_obs
@@ -609,8 +660,19 @@ class PixelLikelihood:
             self.n_T, self.n_P, self.nbands,
             include_TB=self.include_TB, include_EB=self.include_EB)
 
-        # Pre-build all derivative kernel matrices (block-sparse, stored dense)
-        self._kernel_matrices = self._build_all_kernels()
+        # Resolve kernel mode
+        if self.kernel_mode == 'auto':
+            self._resolved_mode = self._choose_kernel_mode(self.layout.n_params)
+        else:
+            self._resolved_mode = self.kernel_mode
+            kernel_mem = self._estimate_kernel_memory_gb(self.layout.n_params)
+            print(f"Kernel mode: {self._resolved_mode} ({kernel_mem:.1f} GB for kernels)")
+
+        # Pre-build all derivative kernel matrices or store None for on-the-fly
+        if self._resolved_mode == 'precompute':
+            self._kernel_matrices = self._build_all_kernels()
+        else:
+            self._kernel_matrices = None
 
         # Noise matrix
         if self._N_matrix is not None:
@@ -628,7 +690,7 @@ class PixelLikelihood:
                     lmin, lmax, band_edges,
                     beam=None, band_model='Cl',
                     include_TB=False, include_EB=False,
-                    N_matrix=None):
+                    N_matrix=None, kernel_mode='auto'):
         """
         Construct without FITS files, for testing.
 
@@ -651,6 +713,7 @@ class PixelLikelihood:
         obj.n_P    = n_P
         obj.include_TB = include_TB
         obj.include_EB = include_EB
+        obj.kernel_mode = kernel_mode
         obj.beam2  = np.ones(lmax + 1) if beam is None else np.asarray(beam)[:lmax+1]**2
 
         bm = band_model
@@ -718,69 +781,83 @@ class PixelLikelihood:
     # Build derivative kernel matrices
     # ------------------------------------------------------------------
 
+    def _build_kernel(self, idx):
+        """
+        Build a single derivative kernel matrix for parameter index idx.
+        Returns an (N_d, N_d) matrix.
+        """
+        Nd = len(self.d)
+        n = self.n_obs
+        geom = self._geom
+
+        spec, i, j, b = self.layout.decode(idx)
+        K = np.zeros((Nd, Nd))
+
+        if spec == 'TT':
+            si = self._T_slice(i)
+            sj = self._T_slice(j)
+            K_tt = self._TT_kernels[b]
+            K[si, sj] = K_tt
+            if i != j:
+                K[sj, si] = K_tt.T
+
+        elif spec in ('TE', 'TB'):
+            si = self._T_slice(i)
+            sj = self._P_slice(j)
+            Kx_b = self._Kx[b]
+            _, _, _, _, c2j, s2j = geom
+            if spec == 'TE':
+                blk = _build_te_block(Kx_b, c2j, s2j)
+            else:
+                blk = _build_tb_block(Kx_b, c2j, s2j)
+            K[si, sj] = blk
+            K[sj, si] = blk.T
+
+        elif spec == 'EE':
+            sj = self._P_slice(i)
+            sk = self._P_slice(j)
+            Kp_b, Km_b = self._Kp[b], self._Km[b]
+            blk = _ee_kernel(Kp_b, Km_b, geom)
+            K[sj, sk] = blk
+            if i != j:
+                K[sk, sj] = blk.T
+
+        elif spec == 'BB':
+            sj = self._P_slice(i)
+            sk = self._P_slice(j)
+            Kp_b, Km_b = self._Kp[b], self._Km[b]
+            blk = _bb_kernel(Kp_b, Km_b, geom)
+            K[sj, sk] = blk
+            if i != j:
+                K[sk, sj] = blk.T
+
+        elif spec == 'EB':
+            sj = self._P_slice(i)
+            sk = self._P_slice(j)
+            blk = _eb_kernel(self._Km[b], geom)
+            K[sj, sk] = blk
+            if i != j:
+                K[sk, sj] = blk.T
+
+        return K
+
+    def _get_kernel(self, idx):
+        """
+        Get kernel matrix for parameter index idx.
+        In precompute mode: fetch from cache.
+        In onthefly mode: build on demand.
+        """
+        if self._resolved_mode == 'precompute':
+            return self._kernel_matrices[idx]
+        else:
+            return self._build_kernel(idx)
+
     def _build_all_kernels(self):
         """
         Returns a list of n_params full (N_d, N_d) derivative matrices,
         one per parameter, indexed identically to layout.entries().
         """
-        Nd = len(self.d)
-        n  = self.n_obs
-        nb = self.nbands
-        geom = self._geom
-
-        kernels = [None] * self.layout.n_params
-
-        for idx, spec, i, j, b in self.layout.entries():
-            K = np.zeros((Nd, Nd))
-
-            if spec == 'TT':
-                si = self._T_slice(i)
-                sj = self._T_slice(j)
-                K_tt = self._TT_kernels[b]
-                K[si, sj] = K_tt
-                if i != j:
-                    K[sj, si] = K_tt.T
-
-            elif spec in ('TE', 'TB'):
-                si = self._T_slice(i)
-                sj = self._P_slice(j)
-                Kx_b = self._Kx[b]
-                _, _, _, _, c2j, s2j = geom
-                if spec == 'TE':
-                    blk = _build_te_block(Kx_b, c2j, s2j)  # (n, 2n)
-                else:
-                    blk = _build_tb_block(Kx_b, c2j, s2j)  # (n, 2n)
-                K[si, sj] = blk
-                K[sj, si] = blk.T
-
-            elif spec == 'EE':
-                sj = self._P_slice(i)
-                sk = self._P_slice(j)
-                Kp_b, Km_b = self._Kp[b], self._Km[b]
-                blk = _ee_kernel(Kp_b, Km_b, geom)  # (2n, 2n)
-                K[sj, sk] = blk
-                if i != j:
-                    K[sk, sj] = blk.T
-
-            elif spec == 'BB':
-                sj = self._P_slice(i)
-                sk = self._P_slice(j)
-                Kp_b, Km_b = self._Kp[b], self._Km[b]
-                blk = _bb_kernel(Kp_b, Km_b, geom)  # (2n, 2n)
-                K[sj, sk] = blk
-                if i != j:
-                    K[sk, sj] = blk.T
-
-            elif spec == 'EB':
-                sj = self._P_slice(i)
-                sk = self._P_slice(j)
-                blk = _eb_kernel(self._Km[b], geom)  # (2n, 2n)
-                K[sj, sk] = blk
-                if i != j:
-                    K[sk, sj] = blk.T
-
-            kernels[idx] = K
-
+        kernels = [self._build_kernel(idx) for idx in range(self.layout.n_params)]
         return kernels
 
     # ------------------------------------------------------------------
@@ -799,7 +876,7 @@ class PixelLikelihood:
         C  = np.zeros((Nd, Nd))
         for idx, _, _, _, _ in self.layout.entries():
             if cl_bands[idx] != 0.0:
-                C += cl_bands[idx] * self._kernel_matrices[idx]
+                C += cl_bands[idx] * self._get_kernel(idx)
         return C
 
     def log_likelihood(self, cl_bands):
@@ -836,12 +913,12 @@ class PixelLikelihood:
 
         # Build A_b = L^{-1} K_b (L^{-1})^T for each kernel
         for idx in range(np_total):
-            K_b = self._kernel_matrices[idx]
+            K_b = self._get_kernel(idx)
             W   = solve_triangular(L,   K_b,   lower=True)        # L W = K_b
             A[idx] = solve_triangular(L, W.T, lower=True).T       # L A^T = W^T
 
         g = np.array([
-            0.5 * (v @ (self._kernel_matrices[b] @ v) - np.trace(A[b]))
+            0.5 * (v @ (self._get_kernel(b) @ v) - np.trace(A[b]))
             for b in range(np_total)
         ])
 
