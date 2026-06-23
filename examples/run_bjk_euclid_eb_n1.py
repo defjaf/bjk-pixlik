@@ -56,7 +56,7 @@ def main():
         lmin=LMIN, lmax=LMAX,
         band_edges=BAND_EDGES,
         n_T=0, n_P=1,
-        band_model='Cl',
+        band_model='Dl',  # Match Almanac D_l=const convention
         include_TB=False,
         include_EB=True,      # Include EB!
         kernel_mode='auto',   # Auto-select based on RAM
@@ -78,8 +78,8 @@ def main():
     print(f"  Threads: {lik.n_threads}")
     print()
 
-    # Initial guess: small positive values
-    cl_init = np.full(layout.n_params, 1e-8)
+    # Initial guess: small positive D_ℓ values (1e-6 is ~right scale for weak lensing)
+    cl_init = np.full(layout.n_params, 1e-6)
 
     # Run Newton-Raphson
     print(f"Running Newton-Raphson (max_iter=20)...")

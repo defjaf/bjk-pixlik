@@ -221,17 +221,23 @@ def _wigner_d20_recurrence(x, lmax):
     return dx
 
 
-def _build_spin2_kernels(obs_pix, nside, lmin, lmax, band_edges, beam2):
+def _build_spin2_kernels(obs_pix, nside, lmin, lmax, band_edges, beam2,
+                          ell_weights=None):
     """
     Build the Wigner d-matrix band kernels and pixel-pair geometry.
 
+    With ell_weights=None (default): C_l = C_b = const within band b.
+    With ell_weights[l] = 2pi/(l*(l+1)): D_l = D_b = const within band b.
+
     Returns:
       Kp_bands, Km_bands, Kx_bands : lists of (n_obs, n_obs) per band
-        Kp[b] = sum_{l in b} (2l+1)/(8pi) B_l^2 d^l_{2,+2}(cos theta)
+        Kp[b] = sum_{l in b} (2l+1)/(8pi) B_l^2 ell_weights[l] d^l_{2,+2}(cos theta)
         Km[b] = same for d^l_{2,-2}
         Kx[b] = same for d^l_{2,0}   [used for EB; TE uses 2*Kx]
       geom : 6-tuple from _compute_spin2_geometry
     """
+    if ell_weights is None:
+        ell_weights = np.ones(lmax + 1)
     n = len(obs_pix)
     vx, vy, vz = hp.pix2vec(nside, obs_pix)
     vec = np.column_stack([vx, vy, vz])
@@ -251,7 +257,7 @@ def _build_spin2_kernels(obs_pix, nside, lmin, lmax, band_edges, beam2):
         b = int(np.searchsorted(band_edges, l, side='right')) - 1
         if not (0 <= b < nbands):
             continue
-        fac = (2*l + 1) / (8*np.pi) * beam2[l]
+        fac = (2*l + 1) / (8*np.pi) * beam2[l] * ell_weights[l]
         Kp_bands[b] += fac * dp[l]
         Km_bands[b] += fac * dm[l]
         Kx_bands[b] += fac * dx[l]
@@ -672,7 +678,7 @@ class PixelLikelihood:
         if self.n_P > 0:
             self._Kp, self._Km, self._Kx, self._geom = _build_spin2_kernels(
                 self.obs_pix, self.nside, self.lmin, self.lmax,
-                self.band_edges, self.beam2)
+                self.band_edges, self.beam2, ell_weights=self._ew)
 
         self.layout = SpectraLayout(
             self.n_T, self.n_P, self.nbands,
@@ -972,12 +978,13 @@ class PixelLikelihood:
 
     def newton_raphson(self, cl_init, max_iter=15, tol=1e-4, damp=1.0):
         """
-        Newton-Raphson for ML bandpowers.
+        Newton-Raphson for ML bandpowers with backtracking line search.
 
         cl_init : flat array length layout.n_params
         Returns (cl_ml, sigma, F) where sigma = sqrt(diag(F^{-1})).
         """
         cl = np.array(cl_init, dtype=float)
+        logL_best = self.log_likelihood(cl)
         print(f"\nNewton-Raphson ({len(cl)} parameters, max_iter={max_iter})")
 
         for it in range(max_iter):
@@ -987,11 +994,25 @@ class PixelLikelihood:
             except np.linalg.LinAlgError as e:
                 print(f"  iter {it+1}: stopping ({e})")
                 break
-            cl_new = cl + damp * delta
-            step   = np.max(np.abs(delta) / (np.abs(cl) + 1e-40))
-            logL   = self.log_likelihood(cl_new)
-            print(f"  iter {it+1}: logL={logL:.4f}  max|δ/C|={step:.2e}")
+
+            # Backtracking line search: try damp, damp/2, damp/4, ...
+            alpha = damp
+            for _ in range(5):
+                cl_new = cl + alpha * delta
+                logL_new = self.log_likelihood(cl_new)
+                if np.isfinite(logL_new) and logL_new > logL_best:
+                    break
+                alpha *= 0.5
+            else:
+                # No improvement found
+                print(f"  iter {it+1}: no finite improvement, stopping")
+                break
+
+            step = np.max(np.abs(alpha * delta) / (np.abs(cl) + 1e-40))
+            print(f"  iter {it+1}: logL={logL_new:.4f}  max|δ/C|={step:.2e}")
             cl = cl_new
+            logL_best = logL_new
+
             if step < tol:
                 print("  Converged.")
                 break
