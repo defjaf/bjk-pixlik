@@ -36,10 +36,10 @@ Each group repeated for nbands, so parameter layout is:
 Memory: O(N_d^2).  For n_T=n_P=6, n_obs~2000: N_d~36000; N_d^2~1e9 doubles ~8 GB.
 For n_T=n_P<=2 or n_obs<=~500, comfortably under 16 GB.
 
-** MEMORY WARNING for spin-2 multi-field (n_P >= 1, include_EB=True) **
+** MEMORY WARNING for spin-2 multi-field (n_P >= 1, include_EB=False) **
 With N_d = 2*n_obs and n_params kernels, all kernel matrices are allocated upfront:
   n_params × N_d² × 8 bytes.
-Example: n_P=1, include_EB=True, 7 bands → 21 kernels × (2×4900)² × 8 ≈ 16 GB stored,
+Example: n_P=1, include_EB=False, 7 bands → 21 kernels × (2×4900)² × 8 ≈ 16 GB stored,
 plus substantial temporary arrays during kernel construction — peak RAM usage can
 exceed 50 GB at NSIDE=64/fsky=0.1.  On a 64 GB machine this will OOM.
 
@@ -482,6 +482,7 @@ class PixelLikelihood:
                  include_TB=False, include_EB=False,
                  N_matrix=None,
                  kernel_mode='auto',
+                 n_threads='auto',
                  # backward-compat
                  nfields=None, spin=None, ntomo=None, ell_weights=None):
 
@@ -507,6 +508,22 @@ class PixelLikelihood:
         if kernel_mode not in ('precompute', 'onthefly', 'auto'):
             raise ValueError(f"kernel_mode must be 'precompute', 'onthefly', or 'auto', got {kernel_mode!r}")
         self.kernel_mode = kernel_mode
+
+        # Thread configuration
+        if n_threads == 'auto':
+            import os
+            self.n_threads = os.cpu_count() or 1
+        elif isinstance(n_threads, int) and n_threads > 0:
+            self.n_threads = n_threads
+        else:
+            raise ValueError(f"n_threads must be 'auto' or positive int, got {n_threads!r}")
+
+        if self.n_threads > 1:
+            import multiprocessing
+            # Use physical cores, not hyperthreads
+            physical_cores = multiprocessing.cpu_count() // 2
+            if self.n_threads > physical_cores:
+                print(f"Note: Using {self.n_threads} threads but only {physical_cores} physical cores")
 
         self.beam2 = np.ones(lmax + 1) if beam is None else np.asarray(beam)[:lmax+1]**2
 
@@ -641,7 +658,8 @@ class PixelLikelihood:
         """Build kernels and layout after d, N_diag, obs_pix, nside, n_obs are set."""
         n = self.n_obs
         print(f"Building kernels (n_T={self.n_T}, n_P={self.n_P}, "
-              f"lmin={self.lmin}, lmax={self.lmax}, nbands={self.nbands})...")
+              f"lmin={self.lmin}, lmax={self.lmax}, nbands={self.nbands}, "
+              f"threads={self.n_threads})...")
 
         self._TT_kernels = None
         self._Kp = self._Km = self._Kx = self._geom = None
@@ -690,7 +708,7 @@ class PixelLikelihood:
                     lmin, lmax, band_edges,
                     beam=None, band_model='Cl',
                     include_TB=False, include_EB=False,
-                    N_matrix=None, kernel_mode='auto'):
+                    N_matrix=None, kernel_mode='auto', n_threads='auto'):
         """
         Construct without FITS files, for testing.
 
@@ -715,6 +733,15 @@ class PixelLikelihood:
         obj.include_EB = include_EB
         obj.kernel_mode = kernel_mode
         obj.beam2  = np.ones(lmax + 1) if beam is None else np.asarray(beam)[:lmax+1]**2
+
+        # Thread configuration
+        if n_threads == 'auto':
+            import os
+            obj.n_threads = os.cpu_count() or 1
+        elif isinstance(n_threads, int) and n_threads > 0:
+            obj.n_threads = n_threads
+        else:
+            raise ValueError(f"n_threads must be 'auto' or positive int, got {n_threads!r}")
 
         bm = band_model
         if isinstance(bm, str):
@@ -912,10 +939,23 @@ class PixelLikelihood:
         A = [None] * np_total
 
         # Build A_b = L^{-1} K_b (L^{-1})^T for each kernel
-        for idx in range(np_total):
-            K_b = self._get_kernel(idx)
-            W   = solve_triangular(L,   K_b,   lower=True)        # L W = K_b
-            A[idx] = solve_triangular(L, W.T, lower=True).T       # L A^T = W^T
+        if self.n_threads == 1:
+            # Serial computation
+            for idx in range(np_total):
+                K_b = self._get_kernel(idx)
+                W   = solve_triangular(L,   K_b,   lower=True)        # L W = K_b
+                A[idx] = solve_triangular(L, W.T, lower=True).T       # L A^T = W^T
+        else:
+            # Parallel computation
+            from concurrent.futures import ThreadPoolExecutor
+
+            def compute_A_b(idx):
+                K_b = self._get_kernel(idx)
+                W   = solve_triangular(L,   K_b,   lower=True)
+                return solve_triangular(L, W.T, lower=True).T
+
+            with ThreadPoolExecutor(max_workers=self.n_threads) as executor:
+                A = list(executor.map(compute_A_b, range(np_total)))
 
         g = np.array([
             0.5 * (v @ (self._get_kernel(b) @ v) - np.trace(A[b]))
