@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bjk-pixlik"
+version = "0.2.0"
+description = "Bond, Jaffe & Knox (1998) pixel-space CMB power-spectrum likelihood"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [
+    { name = "Andrew Jaffe", email = "a.jaffe@imperial.ac.uk" },
+]
+keywords = ["cosmology", "CMB", "power spectrum", "likelihood", "HEALPix"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Astronomy",
+    "Intended Audience :: Science/Research",
+]
+
+# Core library (pixel_likelihood.py) imports only these.
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "healpy>=1.16",
+]
+
+[project.optional-dependencies]
+# Plotting for examples/ and the comparison scripts.
+examples = ["matplotlib>=3.7"]
+# Cross-method comparison against the NaMaster pseudo-C_l estimator.
+compare = ["pymaster>=1.4"]
+# C_l / bandpower sampler prototype (HMC/NUTS on the BJK marginal likelihood).
+sampler = ["blackjax>=1.0", "jax>=0.4"]
+# Test suite.
+test = ["pytest>=7.0"]
+# Everything, for development.
+dev = [
+    "matplotlib>=3.7",
+    "pymaster>=1.4",
+    "blackjax>=1.0",
+    "jax>=0.4",
+    "pytest>=7.0",
+]
+
+[project.urls]
+Reference = "https://doi.org/10.1103/PhysRevD.57.2117"
+
+# Single-module distribution: keep the import name `pixel_likelihood` so existing
+# `from pixel_likelihood import PixelLikelihood` call sites keep working.
+[tool.setuptools]
+py-modules = ["pixel_likelihood"]
+
+# NOTE: tests are run via their own __main__ harness (each exits non-zero on
+# failure), e.g. `python3 tests/test_general.py`. They aggregate failures and
+# print a summary rather than using bare asserts, so they are not yet pytest-
+# native; `pytest` would collect but not fail on them. The `test` extra ships
+# pytest for future pytest-native tests (e.g. the sampler prototype).

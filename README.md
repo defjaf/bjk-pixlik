@@ -38,13 +38,37 @@ The spin-2 kernels use the Zaldarriaga & Seljak (1997) pixel-pair angle conventi
 The HEALPix E-mode sign convention (a_E = −Re(…)) introduces a minus sign in the
 TE block relative to the naive Wigner theory formula.
 
-## Requirements
+## Installation
+
+Editable install (recommended — one source of truth across projects):
 
 ```
-pip install -r requirements.txt
+pip install -e .
 ```
 
-Requires Python ≥ 3.9, numpy, scipy, healpy.
+This installs the `pixel_likelihood` module and its core dependencies (numpy,
+scipy, healpy). Optional extras:
+
+```
+pip install -e ".[examples]"   # matplotlib, for examples/ and comparison plots
+pip install -e ".[compare]"    # pymaster, for NaMaster cross-checks
+pip install -e ".[sampler]"    # blackjax/jax, for the C_l sampler prototype
+pip install -e ".[dev]"        # everything above + pytest
+```
+
+Requires Python ≥ 3.9. (`requirements.txt` is retained for the example-script
+dependency set; the package metadata in `pyproject.toml` is authoritative.)
+
+## Tests
+
+Each test file is a self-contained runner that exits non-zero on failure:
+
+```
+python3 tests/test_general.py          # multi-field unit tests (incl. gradient FD)
+python3 tests/test_full_sky_tt.py      # TT regression vs reference
+python3 tests/test_band_model.py       # Cl vs Dl handling (spin-0 and spin-2)
+python3 tests/test_newton_boundary.py  # Newton-Raphson near the EB PD boundary
+```
 
 ## Usage
 
