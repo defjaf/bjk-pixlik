@@ -5,7 +5,8 @@ Benchmark memory usage and performance for different kernel modes.
 import numpy as np
 import healpy as hp
 import time
-import sys
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pixel_likelihood import PixelLikelihood
 
 def format_bytes(nbytes):
