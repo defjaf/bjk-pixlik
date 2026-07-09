@@ -56,6 +56,36 @@ def load_bjk_results(filename):
     return result
 
 
+def hsm(samples, nbins=50):
+    """
+    Half-Sample Mode (HSM) estimator: robust mode for asymmetric distributions.
+
+    Algorithm:
+    1. Sort samples and compute density via histogram
+    2. Find the shortest interval containing half the samples
+    3. Return the midpoint of that interval
+
+    This is more robust than the mean for skewed posteriors and locates the
+    peak better than the median for multimodal distributions.
+    """
+    x_sorted = np.sort(samples)
+    n = len(x_sorted)
+    half_n = n // 2
+
+    # Find shortest interval containing half the samples
+    min_width = np.inf
+    best_lo = 0
+    for i in range(n - half_n):
+        width = x_sorted[i + half_n] - x_sorted[i]
+        if width < min_width:
+            min_width = width
+            best_lo = i
+
+    # Mode is midpoint of shortest half-sample interval
+    mode = 0.5 * (x_sorted[best_lo] + x_sorted[best_lo + half_n])
+    return mode
+
+
 def load_almanac_bandpowers(ellip_file):
     """
     Extract bandpowers from Almanac ellip.extract.npy file.
@@ -66,6 +96,8 @@ def load_almanac_bandpowers(ellip_file):
         θ_EE = exp(2*λ_00)
         θ_EB = λ_10 * exp(λ_00)
         θ_BB = λ_10² + exp(2*λ_11)
+
+    Returns both posterior mean and HSM mode estimates.
     """
     print(f"Loading Almanac bandpowers from: {ellip_file}")
     ellip = np.load(ellip_file)  # (nsamples, nbands * 3)
@@ -95,14 +127,19 @@ def load_almanac_bandpowers(ellip_file):
         theta_samples[:, b, 1] = theta_eb
         theta_samples[:, b, 2] = theta_bb
 
-    # Compute posterior statistics
+    # Compute posterior statistics (mean and mode)
     theta_mean = theta_samples.mean(axis=0)  # (nbands, 3)
     theta_std = theta_samples.std(axis=0)
+    theta_mode = np.zeros_like(theta_mean)
+
+    for b in range(nbands):
+        for spec_idx in range(3):
+            theta_mode[b, spec_idx] = hsm(theta_samples[:, b, spec_idx])
 
     result = {
-        'EE': {'ell': ell_b, 'cl': theta_mean[:, 0], 'sigma': theta_std[:, 0]},
-        'EB': {'ell': ell_b, 'cl': theta_mean[:, 1], 'sigma': theta_std[:, 1]},
-        'BB': {'ell': ell_b, 'cl': theta_mean[:, 2], 'sigma': theta_std[:, 2]},
+        'EE': {'ell': ell_b, 'cl': theta_mean[:, 0], 'cl_mode': theta_mode[:, 0], 'sigma': theta_std[:, 0]},
+        'EB': {'ell': ell_b, 'cl': theta_mean[:, 1], 'cl_mode': theta_mode[:, 1], 'sigma': theta_std[:, 1]},
+        'BB': {'ell': ell_b, 'cl': theta_mean[:, 2], 'cl_mode': theta_mode[:, 2], 'sigma': theta_std[:, 2]},
     }
 
     return result
@@ -195,11 +232,12 @@ def main():
             if spec not in bjk:
                 continue
             f.write(f"\n{spec}:\n")
-            f.write("  ell_b    BJK_mean    BJK_sigma    ALM_mean    ALM_sigma    diff/sigma\n")
+            f.write("  ell_b    BJK_mean    BJK_sigma    ALM_mean    ALM_mode    ALM_sigma    diff/sigma\n")
 
             for i in range(len(ell_b)):
                 f.write(f"  {ell_b[i]:5.0f}  {bjk[spec]['cl'][i]:10.3e}  "
                        f"{bjk[spec]['sigma'][i]:10.3e}  {alm[spec]['cl'][i]:10.3e}  "
+                       f"{alm[spec]['cl_mode'][i]:10.3e}  "
                        f"{alm[spec]['sigma'][i]:10.3e}  {chi2_stats[spec]['pull'][i]:7.3f}\n")
 
     print(f"\nSaved text comparison: {OUT_TXT}")
@@ -221,12 +259,15 @@ def main():
                       label='BJK ML ± Fisher σ', alpha=0.8)
         ax_cl.errorbar(ell_b + 2, alm[spec]['cl'], yerr=alm[spec]['sigma'],
                       fmt='s', color='black', capsize=4, ms=5, lw=1.5,
-                      label='Almanac HMC ± post. σ', alpha=0.6)
+                      label='Almanac mean ± post. σ', alpha=0.6)
+        # Add HSM mode as diamond markers
+        ax_cl.plot(ell_b + 2, alm[spec]['cl_mode'], 'D', color='darkred',
+                   ms=5, alpha=0.7, label='Almanac HSM mode')
         ax_cl.axhline(0, color='k', lw=0.5, ls='--', alpha=0.3)
         ax_cl.set_xlabel(r'$\ell$')
         ax_cl.set_ylabel(rf'$C_\ell^{{{spec}}}$  [rad$^2$]')
         ax_cl.set_title(rf'{spec}: BJK vs Almanac')
-        ax_cl.legend(fontsize=9)
+        ax_cl.legend(fontsize=8, loc='best')
         ax_cl.grid(True, alpha=0.3)
 
         # Bottom: Residuals (pull plot)
