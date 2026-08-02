@@ -57,6 +57,46 @@ def load_bjk():
     return out
 
 
+def load_almanac():
+    """Load Almanac HMC posterior mean and std for EE, BB, EB."""
+    ellip_file = os.path.join(ALMANAC_DIR, f'euclid_rr2_tombin{TOMBIN}_nside{NSIDE}_bandpower_v1.ellip.extract.npy')
+    if not os.path.exists(ellip_file):
+        return None
+
+    ellip = np.load(ellip_file)  # (nsamples, nbands * 3)
+    nsamples = ellip.shape[0]
+    nbands = len(BAND_EDGES) - 1
+    nparams_per_band = 3  # EE, EB, BB
+
+    # Convert from λ (Cholesky) to θ (bandpower) space
+    theta_samples = np.zeros((nsamples, nbands, 3))  # (samples, bands, [EE, EB, BB])
+
+    for b in range(nbands):
+        offset = b * nparams_per_band
+        lam_ee = ellip[:, offset + 0]     # λ(0,0)
+        lam_eb = ellip[:, offset + 1]     # λ(1,0)
+        lam_bb = ellip[:, offset + 2]     # λ(1,1)
+
+        theta_ee = np.exp(2.0 * lam_ee)
+        theta_eb = lam_eb * np.exp(lam_ee)
+        theta_bb = lam_eb**2 + np.exp(2.0 * lam_bb)
+
+        theta_samples[:, b, 0] = theta_ee
+        theta_samples[:, b, 1] = theta_eb
+        theta_samples[:, b, 2] = theta_bb
+
+    # Bandpower statistics (theta values are C_ell)
+    ell_b = 0.5 * (BAND_EDGES[:-1] + BAND_EDGES[1:] - 1)
+    theta_mean = theta_samples.mean(axis=0)  # (nbands, 3)
+    theta_std = theta_samples.std(axis=0)
+
+    return {
+        'EE': {'ell': ell_b, 'D': theta_mean[:, 0], 'sigma': theta_std[:, 0]},
+        'EB': {'ell': ell_b, 'D': theta_mean[:, 1], 'sigma': theta_std[:, 1]},
+        'BB': {'ell': ell_b, 'D': theta_mean[:, 2], 'sigma': theta_std[:, 2]},
+    }
+
+
 def main():
     NINV = os.path.join(ALMANAC_DIR, f'euclid_rr2_tombin{TOMBIN}_nside{NSIDE}_invnoise.fits')
     DATA = os.path.join(ALMANAC_DIR, f'euclid_rr2_tombin{TOMBIN}_nside{NSIDE}_data.fits')
@@ -157,6 +197,7 @@ def main():
     EB_corr = (dEB_raw - N_EB) / T_EB
 
     bjk = load_bjk()
+    alm = load_almanac()
 
     # --- Error bars: signal(EE fiducial)+noise ensemble through full corrected pipeline ---
     print(f"Fiducial signal+noise ensemble ({NSIM}) for NaMaster error bars...")
@@ -190,19 +231,33 @@ def main():
     print(f"  T_EE = {np.median(T_EE[2:]):.3f},  T_BB = {np.median(T_BB[2:]):.3f}")
     print(f"  E->B leak per unit EE = {np.median(leak_per_EE[2:]):.4f}")
 
-    print(f"\n{'ℓ':<7} {'BJK_EE':<9} {'NMT_EE':<9} {'±err':<7} {'ratio':<7}  "
-          f"{'BJK_BB':<9} {'NMT_BB':<9} {'±err'}")
-    print("-"*72)
+    print(f"\n{'ℓ':<7} {'BJK_EE':<9} {'ALM_EE':<9} {'NMT_EE':<9} {'±err':<7} {'ratio':<7}  "
+          f"{'BJK_BB':<9} {'ALM_BB':<9} {'NMT_BB':<9} {'±err'}")
+    print("-"*95)
     for i in range(len(ell_eff)):
         rEE = EE_corr[i]/bjk['EE']['D'][i]
-        print(f"{ell_eff[i]:<7.1f} {bjk['EE']['D'][i]*1e6:<9.2f} {EE_corr[i]*1e6:<9.2f} "
-              f"{err_EE[i]*1e6:<7.2f} {rEE:<7.2f}  {bjk['BB']['D'][i]*1e6:<9.3f} "
+        alm_ee = alm['EE']['D'][i] if alm else 0.0
+        alm_bb = alm['BB']['D'][i] if alm else 0.0
+        print(f"{ell_eff[i]:<7.1f} {bjk['EE']['D'][i]*1e6:<9.2f} {alm_ee*1e6:<9.2f} "
+              f"{EE_corr[i]*1e6:<9.2f} {err_EE[i]*1e6:<7.2f} {rEE:<7.2f}  "
+              f"{bjk['BB']['D'][i]*1e6:<9.3f} {alm_bb*1e6:<9.3f} "
               f"{BB_corr[i]*1e6:<9.3f} {err_BB[i]*1e6:.3f}")
+
     print("\nBB error-bar comparison (median ℓ>=80, D_ℓ×10⁶):")
-    print(f"  NaMaster σ(BB) = {np.median(err_BB[2:])*1e6:.3f}")
+    if alm is not None:
+        print(f"  Almanac  σ(BB) = {np.median(alm['BB']['sigma'][2:])*1e6:.3f}")
     print(f"  BJK      σ(BB) = {np.median(bjk['BB']['sigma'][2:])*1e6:.3f}")
+    print(f"  NaMaster σ(BB) = {np.median(err_BB[2:])*1e6:.3f}")
     print(f"  → NaMaster/BJK variance ratio ~ "
           f"{(np.median(err_BB[2:])/np.median(bjk['BB']['sigma'][2:]))**1:.2f}x larger error")
+
+    if alm is not None:
+        print("\nBJK vs Almanac agreement (RMS pull, ℓ>=80):")
+        for spec in ['EE', 'BB', 'EB']:
+            diff = bjk[spec]['D'][2:] - alm[spec]['D'][2:]
+            sig_comb = np.sqrt(bjk[spec]['sigma'][2:]**2 + alm[spec]['sigma'][2:]**2)
+            rms_pull = np.sqrt(np.mean((diff / sig_comb)**2))
+            print(f"  {spec}: RMS pull = {rms_pull:.3f}")
 
     # --- Plot ---
     fig, axes = plt.subplots(1, 3, figsize=(18, 5.5))
@@ -211,6 +266,11 @@ def main():
         be = bjk[spec]
         ax.errorbar(be['ell'], be['D'], yerr=be['sigma'], fmt='o-', ms=8, lw=2,
                     capsize=5, label='BJK (HEALPix ML)', color='C0', zorder=3)
+        if alm is not None:
+            ae = alm[spec]
+            ax.errorbar(ae['ell'] + 1, ae['D'], yerr=ae['sigma'], fmt='d-', ms=7, lw=2,
+                        capsize=5, label='Almanac (HMC posterior)', color='darkviolet',
+                        alpha=0.8, zorder=2.5)
         ax.errorbar(ell_eff, nmtvals, yerr=nmterr, fmt='s-', ms=8, lw=2, capsize=5,
                     color='C1', zorder=2, label='Flat-sky NaMaster (steelman)')
         ax.axhline(0, color='k', lw=0.8, ls='--', alpha=0.5)
@@ -219,11 +279,13 @@ def main():
         if spec == 'EE':
             ax.set_yscale('log'); ax.set_ylim(1e-6, 5e-5)
 
-    fig.suptitle('Euclid RR2 tombin-1: BJK vs steelman Flat-sky NaMaster '
-                 '(no purify, transfer-corrected, noise+leakage debiased)',
-                 fontsize=13, fontweight='bold')
+    title = 'Euclid RR2 tombin-1: BJK vs Almanac vs steelman Flat-sky NaMaster'
+    if alm is None:
+        title = 'Euclid RR2 tombin-1: BJK vs steelman Flat-sky NaMaster'
+    fig.suptitle(title + '\n(NaMaster: no purify, transfer-corrected, noise+leakage debiased)',
+                 fontsize=12, fontweight='bold')
     fig.tight_layout()
-    outfile = os.path.join(OUT_DIR, 'bjk_vs_flatsky_steelman.png')
+    outfile = os.path.join(OUT_DIR, 'bjk_almanac_flatsky_steelman.png')
     fig.savefig(outfile, dpi=150, bbox_inches='tight')
     print(f"\nSaved: {outfile}")
 
