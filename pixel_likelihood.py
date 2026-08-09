@@ -243,24 +243,63 @@ def _build_spin2_kernels(obs_pix, nside, lmin, lmax, band_edges, beam2,
     vec = np.column_stack([vx, vy, vz])
     cos_theta = np.clip(vec @ vec.T, -1.0, 1.0)
 
-    print("  Computing Wigner d-matrix recurrence...")
-    x_flat = cos_theta.ravel()
-    dp, dm = _wigner_d22_recurrence(x_flat, lmax)
-    dx     = _wigner_d20_recurrence(x_flat, lmax)
+    print("  Computing Wigner d-matrix recurrence (fused)...")
+    x = cos_theta.ravel()
 
     nbands = len(band_edges) - 1
     Kp_bands = [np.zeros(n * n) for _ in range(nbands)]
     Km_bands = [np.zeros(n * n) for _ in range(nbands)]
     Kx_bands = [np.zeros(n * n) for _ in range(nbands)]
 
-    for l in range(lmin, lmax + 1):
+    # The recurrences are stepped and accumulated into the band kernels in the
+    # same loop, so only three consecutive orders are ever held at once. The
+    # previous implementation kept dp[l], dm[l], dx[l] for EVERY l, costing
+    # 3 * lmax * n_obs^2 * 8 bytes -- 37 GB at NSIDE=64/fsky=0.1, which
+    # dominated peak memory and caused OOM before a single Newton step.
+    # This mirrors the rolling Legendre recurrence already used by
+    # _build_scalar_kernels().
+    def _accumulate(l, dp_l, dm_l, dx_l):
+        if l < lmin or l > lmax:
+            return
         b = int(np.searchsorted(band_edges, l, side='right')) - 1
         if not (0 <= b < nbands):
-            continue
+            return
         fac = (2*l + 1) / (8*np.pi) * beam2[l] * ell_weights[l]
-        Kp_bands[b] += fac * dp[l]
-        Km_bands[b] += fac * dm[l]
-        Kx_bands[b] += fac * dx[l]
+        Kp_bands[b] += fac * dp_l
+        Km_bands[b] += fac * dm_l
+        Kx_bands[b] += fac * dx_l
+
+    # l = 1 seeds (identically zero) and l = 2 starting values
+    dp_prev = np.zeros_like(x)
+    dm_prev = np.zeros_like(x)
+    dx_prev = np.zeros_like(x)
+    dp_curr = ((1.0 + x) / 2.0) ** 2
+    dm_curr = ((1.0 - x) / 2.0) ** 2
+    dx_curr = np.sqrt(3.0 / 8.0) * (1.0 - x**2)
+
+    _accumulate(2, dp_curr, dm_curr, dx_curr)
+
+    for l in range(2, lmax):
+        lp1 = l + 1
+        # d^l_{2,+-2}
+        prefac   = lp1 / (lp1**2 - 4.0)
+        coeff1_p = (2*l + 1) * (x - 4.0 / (l * lp1))
+        coeff1_m = (2*l + 1) * (x + 4.0 / (l * lp1))
+        coeff2   = (l**2 - 4.0) / l
+        dp_next = prefac * (coeff1_p * dp_curr - coeff2 * dp_prev)
+        dm_next = prefac * (coeff1_m * dm_curr - coeff2 * dm_prev)
+        # d^l_{2,0}
+        prefac_x = 1.0 / np.sqrt(float(lp1**2 - 4))
+        dx_next  = prefac_x * ((2*l + 1) * x * dx_curr
+                               - np.sqrt(float(l**2 - 4)) * dx_prev)
+
+        _accumulate(lp1, dp_next, dm_next, dx_next)
+
+        dp_prev, dp_curr = dp_curr, dp_next
+        dm_prev, dm_curr = dm_curr, dm_next
+        dx_prev, dx_curr = dx_curr, dx_next
+
+    del dp_prev, dp_curr, dm_prev, dm_curr, dx_prev, dx_curr, x, cos_theta
 
     Kp_bands = [k.reshape(n, n) for k in Kp_bands]
     Km_bands = [k.reshape(n, n) for k in Km_bands]
@@ -629,6 +668,81 @@ class PixelLikelihood:
         kernel_gb = n_params * Nd**2 * 8 / 1e9
         return kernel_gb
 
+    def estimate_memory_gb(self, n_params=None):
+        """
+        Peak memory by phase, in GB.
+
+        There is no single 'memory requirement': the run passes through two
+        distinct phases with different peaks, and which one dominates depends on
+        the configuration.
+
+          construction : building the band kernels (this happens once, in
+                         __init__, and is INDEPENDENT of kernel_mode)
+          gradient     : each gradient_and_fisher call, which holds the A
+                         matrices A_b = L^-1 K_b L^-T (one N_d x N_d per
+                         parameter, needed for the Fisher pairs) and, in
+                         precompute mode, the kernel cache as well
+
+        Returns a dict of GB figures. All terms are exact byte counts for the
+        arrays actually allocated, not rules of thumb.
+        """
+        if n_params is None:
+            n_params = self.layout.n_params
+        n2 = float(self.n_obs) ** 2
+        Nd = (self.n_T + 2 * self.n_P) * self.n_obs
+        nb = len(self.band_edges) - 1
+        B = 8.0 / 1e9
+
+        # --- construction -----------------------------------------------------
+        cos_theta = n2 * B
+        if self.n_P > 0:
+            # rolling recurrence: 3 orders x 3 functions (d22+, d22-, d20),
+            # plus a few same-sized temporaries per step
+            recurrence = 3 * 3 * n2 * B + 4 * n2 * B
+            band_kernels = 3 * nb * n2 * B          # Kp, Km, Kx per band
+        else:
+            recurrence = 3 * n2 * B                 # rolling Legendre
+            band_kernels = nb * n2 * B
+        construction = cos_theta + recurrence + band_kernels
+
+        # --- gradient ---------------------------------------------------------
+        A_list = n_params * Nd**2 * B
+        kernel_cache = n_params * Nd**2 * B
+        one_kernel = Nd**2 * B
+        cov = 2.0 * Nd**2 * B                       # C and M = C + N
+        grad_pre = band_kernels + kernel_cache + A_list + cov
+        grad_otf = band_kernels + one_kernel + A_list + cov
+
+        return dict(n_obs=self.n_obs, Nd=Nd, n_params=n_params, n_bands=nb,
+                    construction=construction, band_kernels=band_kernels,
+                    recurrence=recurrence, A_list=A_list,
+                    kernel_cache=kernel_cache, cov=cov,
+                    gradient_precompute=grad_pre, gradient_onthefly=grad_otf,
+                    peak_precompute=max(construction, grad_pre),
+                    peak_onthefly=max(construction, grad_otf))
+
+    def report_memory(self, n_params=None):
+        """Print the memory budget by phase. Called before kernels are built."""
+        m = self.estimate_memory_gb(n_params)
+        avail = self._detect_available_memory_gb()
+        print("  Memory budget")
+        print(f"    n_obs={m['n_obs']}  N_d={m['Nd']}  "
+              f"n_params={m['n_params']}  n_bands={m['n_bands']}")
+        print(f"    construction phase : {m['construction']:8.2f} GB"
+              f"   (recurrence {m['recurrence']:.2f} + band kernels "
+              f"{m['band_kernels']:.2f}; same in both kernel modes)")
+        print(f"    gradient, precompute: {m['gradient_precompute']:8.2f} GB"
+              f"   (kernels {m['kernel_cache']:.2f} + A {m['A_list']:.2f})")
+        print(f"    gradient, onthefly  : {m['gradient_onthefly']:8.2f} GB"
+              f"   (A {m['A_list']:.2f} dominates; A is always held)")
+        print(f"    => peak precompute {m['peak_precompute']:.2f} GB,"
+              f" peak onthefly {m['peak_onthefly']:.2f} GB;"
+              f" detected available {avail:.1f} GB")
+        if min(m['peak_precompute'], m['peak_onthefly']) > avail:
+            print("    WARNING: even onthefly mode exceeds available memory. "
+                  "Reduce NSIDE, or widen the bands.")
+        return m
+
     def _detect_available_memory_gb(self):
         """Detect available RAM with safety margin."""
         try:
@@ -644,19 +758,23 @@ class PixelLikelihood:
 
     def _choose_kernel_mode(self, n_params):
         """Auto-select kernel mode based on resources."""
-        kernel_mem = self._estimate_kernel_memory_gb(n_params)
+        m = self.estimate_memory_gb(n_params)
         available_mem = self._detect_available_memory_gb()
 
-        total_needed = kernel_mem * 2.0
-
-        if total_needed < available_mem:
+        # Previously this compared kernel_mem * 2.0 against available memory.
+        # The 2.0 was a fair model of the GRADIENT phase (kernel cache + the A
+        # matrices), but it ignored the CONSTRUCTION phase entirely -- which for
+        # spin-2 used to dominate by a wide margin and is unaffected by the mode
+        # chosen here. Both phases are now accounted for explicitly.
+        if m['peak_precompute'] < available_mem:
             mode = 'precompute'
-            print(f"Auto mode: precompute ({kernel_mem:.1f} GB kernels, "
+            print(f"Auto mode: precompute (peak {m['peak_precompute']:.1f} GB, "
                   f"{available_mem:.1f} GB available)")
         else:
             mode = 'onthefly'
-            print(f"Auto mode: onthefly ({total_needed:.1f} GB needed, "
-                  f"{available_mem:.1f} GB available)")
+            print(f"Auto mode: onthefly (precompute would peak at "
+                  f"{m['peak_precompute']:.1f} GB, onthefly "
+                  f"{m['peak_onthefly']:.1f} GB, {available_mem:.1f} GB available)")
 
         return mode
 
@@ -670,6 +788,15 @@ class PixelLikelihood:
         self._TT_kernels = None
         self._Kp = self._Km = self._Kx = self._geom = None
 
+        # The layout depends only on counts, so build it first: that lets the
+        # memory budget be reported BEFORE any large allocation, so a run that
+        # cannot fit says so immediately instead of after minutes of swapping.
+        self.layout = SpectraLayout(
+            self.n_T, self.n_P, self.nbands,
+            include_TB=self.include_TB, include_EB=self.include_EB)
+
+        self.report_memory()
+
         if self.n_T > 0:
             self._TT_kernels = _build_scalar_kernels(
                 self.obs_pix, self.nside, self.lmin, self.lmax,
@@ -679,10 +806,6 @@ class PixelLikelihood:
             self._Kp, self._Km, self._Kx, self._geom = _build_spin2_kernels(
                 self.obs_pix, self.nside, self.lmin, self.lmax,
                 self.band_edges, self.beam2, ell_weights=self._ew)
-
-        self.layout = SpectraLayout(
-            self.n_T, self.n_P, self.nbands,
-            include_TB=self.include_TB, include_EB=self.include_EB)
 
         # Resolve kernel mode
         if self.kernel_mode == 'auto':
