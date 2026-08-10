@@ -71,8 +71,10 @@ Requires: Python ≥3.9, numpy, scipy, healpy, matplotlib
 
 Full test suite:
 ```bash
-python3 tests/test_general.py     # Multi-field unit tests (gradient FD checks, recovery tests)
-python3 tests/test_full_sky_tt.py # TT-only regression tests
+python3 tests/test_general.py          # Multi-field unit tests (gradient FD checks, recovery tests)
+python3 tests/test_full_sky_tt.py      # TT-only regression tests
+python3 tests/test_covariance_exact.py # Exact audit: every spectrum type vs the true covariance
+python3 tests/test_eb_normalization.py # EB normalization and ordered-pair regression tests
 ```
 
 Individual tests are numbered functions in `test_general.py`:
@@ -125,8 +127,8 @@ These simulations use the Euclid RR2v2.1 fsky≈0.01 mask (~2072 observed pixels
 ### Verified spectra
 - **TT**: Verified via tests + Almanac simulation
 - **EE, BB**: Verified via MC + unit tests
-- **TE**: Verified via MC (~5% residual = MC noise floor)
-- **TB**: Formula MC-verified; **signs were wrong in earlier versions — now fixed**
+- **TE**: Verified exactly (`tests/test_covariance_exact.py`); earlier MC check ~5% residual = MC noise floor
+- **TB**: Verified exactly, signs included (`tests/test_covariance_exact.py`); **signs were wrong in earlier versions — now fixed**
 - **EB**: Verified at `n_P=1` to machine precision against the exact alm→map covariance (`tests/test_eb_normalization.py`). **A factor-2 normalization error was fixed 10 Aug 2026** — see below.
 
 ### EB factor-2 error (fixed 10 Aug 2026)
