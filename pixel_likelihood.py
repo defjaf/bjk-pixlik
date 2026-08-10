@@ -46,13 +46,20 @@ exceed 50 GB at NSIDE=64/fsky=0.1.  On a 64 GB machine this will OOM.
 
 Mitigation options:
   1. Reduce NSIDE (NSIDE=32 → n_obs ≈ 1000 → ~1 GB total).
-  2. On-the-fly kernels: build each kernel inside gradient_and_fisher and discard
-     immediately.  Reduces peak to ~2 GB at the cost of ~30 rebuilds per Newton run.
-     This fix is NOT yet implemented.
+  2. On-the-fly kernels (kernel_mode='onthefly'): build each kernel inside
+     gradient_and_fisher and discard immediately, trading ~30 rebuilds per
+     Newton run for a much lower peak.  IMPLEMENTED (June 2026); kernel_mode
+     defaults to 'auto', which picks precompute vs onthefly from the estimate
+     in estimate_memory_gb() and the detected free memory.
+  3. Coarser bands: peak scales with n_params = (spectra) × nbands.
 
-** MULTI-FIELD STATUS: run_bjk_nmt.py wiring for --include-eb is written but UNTESTED **
-(crashed with OOM before completing a single Newton iteration, June 2026).
-Single-field TT and EE/BB (without include_EB) are validated and production-ready.
+** MULTI-FIELD STATUS **
+Single-field TT, EE/BB, and EE/BB/EB at n_P=1 are validated and
+production-ready.  Multi-bin EB (n_P > 1) is exact against the true covariance
+but has NEVER been validated end-to-end, and the RR2 6-bin case has never
+completed (OOM, June 2026).  See CLAUDE.md § "DEFERRED: multi-bin (n_P > 1) EB"
+before using it.  Note EB uses ordered pairs (n_P²), so its parameter count is
+larger than the pre-Aug-2026 n_P(n_P+1)/2.
 
 Complexity per Newton-Raphson iteration: O(n_params * N_d^3) dominated by the
 triangular solves to form A_b = L^{-1} K_b (L^{-1})^T for each kernel K_b.
@@ -63,6 +70,22 @@ import warnings
 import numpy as np
 import healpy as hp
 from scipy.linalg import solve_triangular
+
+
+def _log(*args, **kwargs):
+    """print() that always flushes.
+
+    Every print in this module is progress output for an operation that can run
+    for tens of minutes (kernel construction, Newton iterations).  Python
+    block-buffers stdout when it is not a tty, so redirecting a long run to a
+    file left the log empty until the process exited -- exactly when the
+    progress was no longer useful.  Flushing costs nothing at this volume.
+
+    Callers who want the same for their own output can either use this or set
+    PYTHONUNBUFFERED=1 / sys.stdout.reconfigure(line_buffering=True).
+    """
+    kwargs.setdefault('flush', True)
+    print(*args, **kwargs)
 
 
 class NewtonRaphsonError(RuntimeError):
@@ -255,7 +278,7 @@ def _build_spin2_kernels(obs_pix, nside, lmin, lmax, band_edges, beam2,
     vec = np.column_stack([vx, vy, vz])
     cos_theta = np.clip(vec @ vec.T, -1.0, 1.0)
 
-    print("  Computing Wigner d-matrix recurrence (fused)...")
+    _log("  Computing Wigner d-matrix recurrence (fused)...")
     x = cos_theta.ravel()
 
     nbands = len(band_edges) - 1
@@ -317,7 +340,7 @@ def _build_spin2_kernels(obs_pix, nside, lmin, lmax, band_edges, beam2,
     Km_bands = [k.reshape(n, n) for k in Km_bands]
     Kx_bands = [k.reshape(n, n) for k in Kx_bands]
 
-    print("  Computing pixel-pair geometry (position angles)...")
+    _log("  Computing pixel-pair geometry (position angles)...")
     geom = _compute_spin2_geometry(obs_pix, nside)
 
     return Kp_bands, Km_bands, Kx_bands, geom
@@ -629,7 +652,7 @@ class PixelLikelihood:
             # Use physical cores, not hyperthreads
             physical_cores = multiprocessing.cpu_count() // 2
             if self.n_threads > physical_cores:
-                print(f"Note: Using {self.n_threads} threads but only {physical_cores} physical cores")
+                _log(f"Note: Using {self.n_threads} threads but only {physical_cores} physical cores")
 
         self.beam2 = np.ones(lmax + 1) if beam is None else np.asarray(beam)[:lmax+1]**2
 
@@ -669,7 +692,7 @@ class PixelLikelihood:
 
         self.obs_pix = np.where(raw_ninv[0] > 0)[0]
         self.n_obs   = len(self.obs_pix)
-        print(f"Observed pixels: {self.n_obs}  (f_sky = {self.n_obs/npix:.4f})")
+        _log(f"Observed pixels: {self.n_obs}  (f_sky = {self.n_obs/npix:.4f})")
 
         # Detect ninv format: diagonal (n_f fields) or precision matrix (n_f*(n_f+1)//2 fields).
         # Almanac writes precision matrices, so for EE (n_T=0, n_P=1) ninv has 3 fields:
@@ -786,21 +809,21 @@ class PixelLikelihood:
         """Print the memory budget by phase. Called before kernels are built."""
         m = self.estimate_memory_gb(n_params)
         avail = self._detect_available_memory_gb()
-        print("  Memory budget")
-        print(f"    n_obs={m['n_obs']}  N_d={m['Nd']}  "
+        _log("  Memory budget")
+        _log(f"    n_obs={m['n_obs']}  N_d={m['Nd']}  "
               f"n_params={m['n_params']}  n_bands={m['n_bands']}")
-        print(f"    construction phase : {m['construction']:8.2f} GB"
+        _log(f"    construction phase : {m['construction']:8.2f} GB"
               f"   (recurrence {m['recurrence']:.2f} + band kernels "
               f"{m['band_kernels']:.2f}; same in both kernel modes)")
-        print(f"    gradient, precompute: {m['gradient_precompute']:8.2f} GB"
+        _log(f"    gradient, precompute: {m['gradient_precompute']:8.2f} GB"
               f"   (kernels {m['kernel_cache']:.2f} + A {m['A_list']:.2f})")
-        print(f"    gradient, onthefly  : {m['gradient_onthefly']:8.2f} GB"
+        _log(f"    gradient, onthefly  : {m['gradient_onthefly']:8.2f} GB"
               f"   (A {m['A_list']:.2f} dominates; A is always held)")
-        print(f"    => peak precompute {m['peak_precompute']:.2f} GB,"
+        _log(f"    => peak precompute {m['peak_precompute']:.2f} GB,"
               f" peak onthefly {m['peak_onthefly']:.2f} GB;"
               f" detected available {avail:.1f} GB")
         if min(m['peak_precompute'], m['peak_onthefly']) > avail:
-            print("    WARNING: even onthefly mode exceeds available memory. "
+            _log("    WARNING: even onthefly mode exceeds available memory. "
                   "Reduce NSIDE, or widen the bands.")
         return m
 
@@ -813,7 +836,7 @@ class PixelLikelihood:
             safe_available = available_gb * 0.8
             return safe_available
         except ImportError:
-            print("Warning: psutil not installed, cannot detect memory. "
+            _log("Warning: psutil not installed, cannot detect memory. "
                   "Defaulting to onthefly mode for safety.")
             return 0.0
 
@@ -829,11 +852,11 @@ class PixelLikelihood:
         # chosen here. Both phases are now accounted for explicitly.
         if m['peak_precompute'] < available_mem:
             mode = 'precompute'
-            print(f"Auto mode: precompute (peak {m['peak_precompute']:.1f} GB, "
+            _log(f"Auto mode: precompute (peak {m['peak_precompute']:.1f} GB, "
                   f"{available_mem:.1f} GB available)")
         else:
             mode = 'onthefly'
-            print(f"Auto mode: onthefly (precompute would peak at "
+            _log(f"Auto mode: onthefly (precompute would peak at "
                   f"{m['peak_precompute']:.1f} GB, onthefly "
                   f"{m['peak_onthefly']:.1f} GB, {available_mem:.1f} GB available)")
 
@@ -842,7 +865,7 @@ class PixelLikelihood:
     def _finish_init(self):
         """Build kernels and layout after d, N_diag, obs_pix, nside, n_obs are set."""
         n = self.n_obs
-        print(f"Building kernels (n_T={self.n_T}, n_P={self.n_P}, "
+        _log(f"Building kernels (n_T={self.n_T}, n_P={self.n_P}, "
               f"lmin={self.lmin}, lmax={self.lmax}, nbands={self.nbands}, "
               f"threads={self.n_threads})...")
 
@@ -874,7 +897,7 @@ class PixelLikelihood:
         else:
             self._resolved_mode = self.kernel_mode
             kernel_mem = self._estimate_kernel_memory_gb(self.layout.n_params)
-            print(f"Kernel mode: {self._resolved_mode} ({kernel_mem:.1f} GB for kernels)")
+            _log(f"Kernel mode: {self._resolved_mode} ({kernel_mem:.1f} GB for kernels)")
 
         # Pre-build all derivative kernel matrices or store None for on-the-fly
         if self._resolved_mode == 'precompute':
@@ -889,7 +912,7 @@ class PixelLikelihood:
                 "N_Q_list/N_U_list (from_arrays) or a FITS ninv map (_load_fits).")
         self.N_mat = np.diag(self.N_diag)
 
-        print("Done.")
+        _log("Done.")
 
     @classmethod
     def from_arrays(cls, d_T_list, d_Q_list, d_U_list,
@@ -1198,7 +1221,7 @@ class PixelLikelihood:
         """
         cl = np.array(cl_init, dtype=float)
         logL_best = self.log_likelihood(cl)
-        print(f"\nNewton-Raphson ({len(cl)} parameters, max_iter={max_iter})")
+        _log(f"\nNewton-Raphson ({len(cl)} parameters, max_iter={max_iter})")
 
         n_accepted = 0
         step = np.inf
@@ -1206,7 +1229,7 @@ class PixelLikelihood:
 
         if not np.isfinite(logL_best):
             status = 'singular'
-            print("  initial bandpowers give a non-positive-definite M "
+            _log("  initial bandpowers give a non-positive-definite M "
                   "(logL = -inf)")
             max_iter = 0
 
@@ -1215,7 +1238,7 @@ class PixelLikelihood:
                 g, F = self.gradient_and_fisher(cl)
                 delta = np.linalg.solve(F, g)
             except np.linalg.LinAlgError as e:
-                print(f"  iter {it+1}: stopping ({e})")
+                _log(f"  iter {it+1}: stopping ({e})")
                 status = 'singular' if n_accepted == 0 else 'stalled'
                 break
 
@@ -1238,22 +1261,22 @@ class PixelLikelihood:
                 if np.isfinite(logL_try_best) and \
                         (logL_best - logL_try_best) < logL_eps:
                     status = 'converged'
-                    print(f"  iter {it+1}: no further improvement "
+                    _log(f"  iter {it+1}: no further improvement "
                           f"(< {logL_eps:g} in logL); converged.")
                 else:
                     status = 'no_progress' if n_accepted == 0 else 'stalled'
-                    print(f"  iter {it+1}: no finite improvement, stopping")
+                    _log(f"  iter {it+1}: no finite improvement, stopping")
                 break
 
             step = np.max(np.abs(alpha * delta) / (np.abs(cl) + 1e-40))
-            print(f"  iter {it+1}: logL={logL_new:.4f}  max|δ/C|={step:.2e}")
+            _log(f"  iter {it+1}: logL={logL_new:.4f}  max|δ/C|={step:.2e}")
             cl = cl_new
             logL_best = logL_new
             n_accepted += 1
 
             if step < tol:
                 status = 'converged'
-                print("  Converged.")
+                _log("  Converged.")
                 break
 
         try:
