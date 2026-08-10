@@ -103,10 +103,15 @@ for k in range(N_REAL):
     QU_EB_sum += np.outer(QE, UB) + np.outer(QB, UE)
     UU_EB_sum += np.outer(UE, UB) + np.outer(UB, UE)
 
-# <Q_E Q_B + Q_B Q_E> = 2 * C^{EB} * K_EB; divide by 2 to get C^{EB} * K_EB
-QQ_EB = QQ_EB_sum / (2 * N_REAL)
-QU_EB = QU_EB_sum / (2 * N_REAL)
-UU_EB = UU_EB_sum / (2 * N_REAL)
+# CAUTION -- this is where the factor-2 error found in Aug 2026 came from.
+# The sums above accumulate <Q_E Q_B> + <Q_B Q_E>, which IS the complete EB
+# contribution to <Q_i Q_j> (writing Q = Q_E + Q_B, both orderings appear).
+# The original version divided by an extra 2 here, so the prefactor was fitted
+# against HALF the true covariance and _eb_kernel inherited the factor 1/2.
+# Normalise by N_REAL only: these are the full EB covariance blocks.
+QQ_EB = QQ_EB_sum / N_REAL
+QU_EB = QU_EB_sum / N_REAL
+UU_EB = UU_EB_sum / N_REAL
 
 Kp = Kp_b[0];  Km = Km_b[0]
 
@@ -143,18 +148,20 @@ print(f"\nBest single-term fits for C^{{UU}} EB:")
 for name, a, err in best_candidates(UU_EB):
     print(f"  {name:20s}  scale={a/C_EB:+.3f}*C_EB  rms_rel={err:.4f}")
 
-print(f"\nDerived formula (analytic + MC): QQ=-Km*sin2sp, QU=+Km*cos2sp, UU=+Km*sin2sp")
-print(f"  (Km = d^l_{{2,-2}} Wigner kernel; no Kx, no factor of 2)")
+print(f"\nDerived formula: QQ=-2*Km*sin2sp, QU=+2*Km*cos2sp, UU=+2*Km*sin2sp")
+print(f"  (Km = d^l_{{2,-2}} Wigner kernel; no Kx.  The 2 counts both <E_i B_j>")
+print(f"   and <B_i E_j>; it is what _eb_kernel was missing before Aug 2026.)")
 print(f"  Sign of QQ: Q_B = -U_E from HEALPix convention (Q+iU)=-sum(a_E+ia_B)_{{+2}}Y")
-derived = {"QQ": -Km*sin2sp, "QU": Km*cos2sp, "UU": Km*sin2sp}
+derived = {"QQ": -2*Km*sin2sp, "QU": 2*Km*cos2sp, "UU": 2*Km*sin2sp}
 for comp, exact_mat in [("QQ", QQ_EB), ("QU", QU_EB), ("UU", UU_EB)]:
     rms = rel_err(C_EB * derived[comp], exact_mat)
     print(f"  {comp:2s}: rms_rel={rms:.4f}  {'<-- matches MC noise floor' if rms < 0.15 else 'FAIL'}")
 
 print(f"\nScale check:")
-print(f"  rms(QQ_EB_exact)     = {np.sqrt(np.mean(QQ_EB**2)):.4e}")
-print(f"  rms(C_EB*Km*sin2sp)  = {np.sqrt(np.mean((C_EB*Km*sin2sp)**2)):.4e}")
-print(f"  rms(C_EB*Kx*sin2sp)  = {np.sqrt(np.mean((C_EB*Kx*sin2sp)**2)):.4e}  (old wrong formula)")
+print(f"  rms(QQ_EB_exact)      = {np.sqrt(np.mean(QQ_EB**2)):.4e}")
+print(f"  rms(2*C_EB*Km*sin2sp) = {np.sqrt(np.mean((2*C_EB*Km*sin2sp)**2)):.4e}")
+print(f"  rms(C_EB*Km*sin2sp)   = {np.sqrt(np.mean((C_EB*Km*sin2sp)**2)):.4e}  (missing the 2)")
+print(f"  rms(C_EB*Kx*sin2sp)   = {np.sqrt(np.mean((C_EB*Kx*sin2sp)**2)):.4e}  (old wrong kernel)")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

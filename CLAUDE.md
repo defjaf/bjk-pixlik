@@ -127,10 +127,22 @@ These simulations use the Euclid RR2v2.1 fsky≈0.01 mask (~2072 observed pixels
 - **EE, BB**: Verified via MC + unit tests
 - **TE**: Verified via MC (~5% residual = MC noise floor)
 - **TB**: Formula MC-verified; **signs were wrong in earlier versions — now fixed**
-- **EB**: Verified (analytic + MC, ~7% residual = MC noise floor)
+- **EB**: Verified at `n_P=1` to machine precision against the exact alm→map covariance (`tests/test_eb_normalization.py`). **A factor-2 normalization error was fixed 10 Aug 2026** — see below.
 
-### Multi-field EB support (June 2026)
-**UNTESTED**: The wiring in `run_bjk_nmt.py` for `--include-eb` is written but crashed with OOM before completing a single Newton iteration. Single-field cases (TT, EE/BB without EB) are production-ready.
+### EB factor-2 error (fixed 10 Aug 2026)
+
+`_eb_kernel` was missing a factor of 2: the EB part of `<Q_i Q_j>` is `<Q^E_i Q^B_j> + <Q^B_i Q^E_j>`, both orderings, and the kernel counted one. Every fitted EB bandpower **and its Fisher error** were therefore exactly `2 × C_ℓ^EB`.
+
+The error survived every previous check because value and error scaled together, making pulls, "consistent with zero at Nσ", χ², and detection significance *exactly* invariant — and all EB runs to date were null tests on real data. It shows up only against a known nonzero truth, or as a slope of 2 between BJK EB and another estimator.
+
+**Consequences for stored results:** any EB *amplitude* quoted from a pre-fix run is 2× high with 2× error bars; any *significance* is unchanged. Affects `bjk_euclid_tombin-1_nside128_eb_n1.dat` and the TR1 EB outputs, plus every BJK-vs-Almanac EB comparison. EE and BB are unaffected.
+
+Root cause: `derivations/verify_eb_tb.py` fitted the kernel prefactor against a target that had been divided by an extra 2 (now corrected in that script).
+
+### Multi-field EB support — INCOMPLETE for n_P > 1
+Two separate issues:
+1. **Under-parameterized** (`SpectraLayout.__init__`, the `_pairs['EB']` line): `C^{E_i B_j}` and `C^{E_j B_i}` are *independent* spectra, but EB uses unordered pairs (`n_P(n_P+1)/2`) like EE/BB. Both orderings land in the same (i,j) covariance block, so the single symmetric kernel carries only their sum: the fitted parameter is `(C^{E_iB_j} + C^{E_jB_i})/2` and the antisymmetric part is unmodelled (verified exactly at n_P=2 — the asymmetric case has a 71% shape residual no parameter value can remove). A correct model needs ordered pairs (`n_P²`, as TE/TB already use) with a single-ordering kernel. **n_P=1 is exact and unaffected.**
+2. **Never run**: the `run_bjk_nmt.py` `--include-eb` wiring for multi-bin crashed with OOM before completing a Newton iteration; the RR2 6-bin case has never been run. Single-field cases (TT, EE/BB, and EE/BB/EB at n_P=1) are production-ready.
 
 ### Sign conventions
 
@@ -175,7 +187,7 @@ The flat `cl_bands` parameter vector is ordered as:
 ```
 
 Within each group:
-- Pairs `(i,j)` are ordered with `i ≤ j` for auto-spectra (TT, EE, BB, EB)
+- Pairs `(i,j)` are ordered with `i ≤ j` for auto-spectra (TT, EE, BB, EB) — note EB should use ordered pairs, see "Multi-field EB support" above
 - For cross-spectra (TE, TB), all pairs `i ∈ [0,n_T)`, `j ∈ [0,n_P)` are included
 - Within each pair, bands run `b ∈ [0, nbands)`
 

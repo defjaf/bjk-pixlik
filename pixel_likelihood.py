@@ -365,9 +365,10 @@ def _spin2_cov_block(Kp_b, Km_b, Kx_b, geom, cEE, cBB=0.0, cEB=0.0):
     UU += cBB * (Kp_b * cos2dp + Km_b * cos2sp)
 
     if cEB != 0.0:
-        QQ -= cEB * Km_b * sin2sp
-        QU += cEB * Km_b * cos2sp
-        UU += cEB * Km_b * sin2sp
+        # Factor 2: both <E_i B_j> and <B_i E_j> contribute.  See _eb_kernel.
+        QQ -= 2.0 * cEB * Km_b * sin2sp
+        QU += 2.0 * cEB * Km_b * cos2sp
+        UU += 2.0 * cEB * Km_b * sin2sp
 
     return np.block([[QQ, QU], [QU.T, UU]])
 
@@ -400,12 +401,20 @@ def _eb_kernel(Km_b, geom):
     Derived from the HEALPix spin-2 convention (Q+iU) = -sum (a_E+ia_B) _{+2}Y:
     B-mode maps satisfy Q_B = -U_E (the -i factor introduces a sign flip vs E).
     Only the d^l_{2,-2} (Km) Wigner kernel with sum angles contributes; d^l_{2,0}
-    (Kx) does not appear.  MC-verified in derivations/verify_eb_tb.py.
+    (Kx) does not appear.
+
+    The leading 2 is REQUIRED: writing Q = Q_E + Q_B, the EB part of <Q_i Q_j>
+    is <Q^E_i Q^B_j> + <Q^B_i Q^E_j> -- BOTH orderings, each contributing
+    C^EB * (-Km sin2sp).  Omitting it made every fitted EB bandpower, and its
+    Fisher error, exactly 2x the standard C_l^EB (found Aug 2026; the error was
+    invisible to null tests because value and error scaled together).  Verified
+    to machine precision against the exact alm->map covariance in
+    tests/test_eb_normalization.py.
     """
     _, _, cos2sp, sin2sp, _, _ = geom
-    QQ = -Km_b * sin2sp
-    QU =  Km_b * cos2sp
-    UU =  Km_b * sin2sp
+    QQ = -2.0 * Km_b * sin2sp
+    QU =  2.0 * Km_b * cos2sp
+    UU =  2.0 * Km_b * sin2sp
     return np.block([[QQ, QU], [QU.T, UU]])
 
 
@@ -443,6 +452,14 @@ class SpectraLayout:
         self._pairs['TB'] = [(i, j) for i in range(n_T) for j in range(n_P)] if include_TB else []
         self._pairs['EE'] = [(i, j) for i in range(n_P) for j in range(i, n_P)]
         self._pairs['BB'] = [(i, j) for i in range(n_P) for j in range(i, n_P)]
+        # INCOMPLETE for n_P > 1: C^{E_i B_j} and C^{E_j B_i} are INDEPENDENT
+        # spectra, but unordered pairs give only one parameter for the two, and
+        # both of their contributions land in the same (i,j) covariance block.
+        # The single symmetric kernel can carry only their sum, so the fitted
+        # parameter is (C^{E_iB_j} + C^{E_jB_i})/2 and the antisymmetric part is
+        # unmodelled.  Correct requires ordered pairs (n_P^2, as TE/TB above)
+        # plus a single-ordering kernel in _build_kernel.  Exact at n_P=1, which
+        # is all that has been run.  See tests/test_eb_normalization.py.
         self._pairs['EB'] = [(i, j) for i in range(n_P) for j in range(i, n_P)] if include_EB else []
 
         # Group offsets in the flat vector
