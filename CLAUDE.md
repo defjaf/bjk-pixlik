@@ -138,7 +138,9 @@ These simulations use the Euclid RR2v2.1 fsky≈0.01 mask (~2072 observed pixels
 
 The error survived every previous check because value and error scaled together, making pulls, "consistent with zero at Nσ", χ², and detection significance *exactly* invariant — and all EB runs to date were null tests on real data. It shows up only against a known nonzero truth, or as a slope of 2 between BJK EB and another estimator.
 
-**Consequences for stored results:** any EB *amplitude* quoted from a pre-fix run is 2× high with 2× error bars; any *significance* is unchanged. Affects `bjk_euclid_tombin-1_nside128_eb_n1.dat` and the TR1 EB outputs, plus every BJK-vs-Almanac EB comparison. EE and BB are unaffected.
+**Consequences for stored results:** any EB *amplitude* quoted from a pre-fix run is 2× high with 2× error bars; any *significance* is unchanged. EE and BB are unaffected.
+
+**Downstream sweep: DONE (10 Aug 2026).** No re-running was needed — the old kernel was exactly `K_new/2`, so the old fit built the *identical* covariance and the correction is an exact reparameterisation of the EB axis (EB and σ_EB ÷ 2; EE and BB bit-identical, confirmed by re-fitting the same data pre- and post-fix). Five stored `.dat` files were corrected in place with `.PREFIX_EB2X.bak` originals kept, and five plots regenerated. Closed-loop check on `sim_eb_nside64_fsky01` (known nonzero EB): pulls went from mean +1.96 / rms 2.16 to **+0.12 / 0.96**. BJK-vs-Almanac EB on real RR2 data improved from RMS pull 0.446 to **0.198**. Full record: `~/Desktop/Projects/Almanac/Euclid-Almanac/EB_FACTOR2_CORRECTION.md`.
 
 Root cause: `derivations/verify_eb_tb.py` fitted the kernel prefactor against a target that had been divided by an extra 2 (now corrected in that script).
 
