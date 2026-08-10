@@ -79,7 +79,25 @@ Result (NSIDE=128, matched resolution):
   corrections.
 - **BB:** with error bars, NaMaster BB is consistent with zero — but its
   **σ(BB) is ~3.2× larger than BJK's** (≈0.63 vs 0.20 ×10⁻⁶, median ℓ≥80).
-- **EB:** both null (no parity signal); NaMaster error bars similarly inflated.
+- **EB:** both null (no parity signal), with **σ(EB) ~2.1× larger than BJK's**
+  (≈0.75 vs 0.36 ×10⁻⁶, median ℓ≥80).
+
+  > **Revised 10 Aug 2026.** This line previously said only that NaMaster's EB
+  > errors were "similarly inflated", which was wrong as stated: with BJK's
+  > pre-fix σ(EB) of 0.72, the ratio was **1.04×**, i.e. NaMaster looked *as
+  > efficient as the exact likelihood* on EB. That was an artifact of the BJK
+  > EB factor-2 error (see CLAUDE.md § "EB factor-2 error"), which doubled
+  > BJK's error bar along with its central value. The true ratio is 2.08×,
+  > which sits sensibly between EE (1.41×) and BB (3.20×) rather than being an
+  > unexplained outlier at parity.
+  >
+  > A second clue was visible in the same table and also missed: BJK's Fisher σ
+  > is a Laplace approximation to Almanac's posterior width and sits at 0.78×
+  > (EE) and 0.68× (BB) of it, but pre-fix EB had BJK *wider* than the full HMC
+  > posterior (0.72 vs 0.55) — backwards. Post-fix it is 0.65×, in line.
+  >
+  > Note EE and BB are untouched by all of this: the ~3.2× BB ratio below and
+  > the whole efficiency argument stand exactly as written.
 
 ## Why BJK/Almanac are more efficient (corrected noise argument)
 

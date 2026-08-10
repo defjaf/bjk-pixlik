@@ -243,13 +243,18 @@ def main():
               f"{bjk['BB']['D'][i]*1e6:<9.3f} {alm_bb*1e6:<9.3f} "
               f"{BB_corr[i]*1e6:<9.3f} {err_BB[i]*1e6:.3f}")
 
-    print("\nBB error-bar comparison (median ℓ>=80, D_ℓ×10⁶):")
-    if alm is not None:
-        print(f"  Almanac  σ(BB) = {np.median(alm['BB']['sigma'][2:])*1e6:.3f}")
-    print(f"  BJK      σ(BB) = {np.median(bjk['BB']['sigma'][2:])*1e6:.3f}")
-    print(f"  NaMaster σ(BB) = {np.median(err_BB[2:])*1e6:.3f}")
-    print(f"  → NaMaster/BJK variance ratio ~ "
-          f"{(np.median(err_BB[2:])/np.median(bjk['BB']['sigma'][2:]))**1:.2f}x larger error")
+    # Error-bar comparison for ALL THREE spectra.  err_EE and err_EB were
+    # already computed above but only BB was ever reported, which mattered
+    # after the Aug 2026 EB factor-2 fix halved BJK's sigma(EB): the EB
+    # efficiency gap had been understated by exactly 2x.
+    print("\nError-bar comparison (median ℓ>=80, D_ℓ×10⁶):")
+    print(f"  {'spec':<5} {'Almanac':>9} {'BJK':>9} {'NaMaster':>9}   NMT/BJK")
+    for spec, nmt_err in [('EE', err_EE), ('BB', err_BB), ('EB', err_EB)]:
+        s_bjk = np.median(bjk[spec]['sigma'][2:])
+        s_nmt = np.median(nmt_err[2:])
+        s_alm = np.median(alm[spec]['sigma'][2:]) if alm is not None else np.nan
+        print(f"  {spec:<5} {s_alm*1e6:>9.3f} {s_bjk*1e6:>9.3f} "
+              f"{s_nmt*1e6:>9.3f}   {s_nmt/s_bjk:.2f}x")
 
     if alm is not None:
         print("\nBJK vs Almanac agreement (RMS pull, ℓ>=80):")
