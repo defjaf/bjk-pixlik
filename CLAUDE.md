@@ -161,6 +161,34 @@ Those `Kp` terms cancel in `g + gᵀ`, which is why the auto-bin kernel involves
 
 **Still never run:** the `run_bjk_nmt.py` `--include-eb` wiring for multi-bin crashed with OOM before completing a Newton iteration, and the RR2 6-bin case has never been run. The n_P>1 EB path is now believed correct (exact to ~4×10⁻¹⁵ at n_P=2 in `tests/test_eb_normalization.py`) but has no end-to-end validation on real data.
 
+### ⚠️ DEFERRED: multi-bin (n_P > 1) EB has never been validated end-to-end
+
+**Status as of 10 Aug 2026: deliberately held, not forgotten.** Do not quote a
+multi-bin EB result without doing this first.
+
+What is already established:
+- The n_P>1 EB kernels are **exact against the true covariance** — verified at
+  n_P=2, including asymmetric `C^{E0B1} ≠ C^{E1B0}`, to ~4×10⁻¹⁵
+  (`tests/test_covariance_exact.py`, `tests/test_eb_normalization.py`).
+- That is a *covariance* check. There is no end-to-end check that a multi-bin
+  EB **fit** recovers known inputs, and none on real data.
+
+What is missing, in order:
+1. A closed-loop sim with n_P=2 and a **known, asymmetric** EB cross-spectrum
+   (`C^{E_0B_1} ≠ C^{E_1B_0}`), fitted end-to-end, pulls checked against the
+   unscaled truth. This is the multi-bin analogue of
+   `sim_runs/sim_eb_nside64_fsky01`, which caught the factor-2 error at n_P=1.
+   Nothing smaller will do: the ordered-pair structure is exactly what an
+   auto-bin-only or symmetric-input test cannot see.
+2. Only then, the RR2 6-bin case (`run_bjk_nmt.py --include-eb`), which has
+   **never completed** — it OOM'd before finishing a single Newton iteration.
+
+Memory warning for step 2: EB now uses ordered pairs, so the EB parameter count
+grew from `n_P(n_P+1)/2` to `n_P²` — at n_P=6 that is 21 → 36 EB pairs, i.e.
+~70% more EB kernels than the configuration that already ran out of memory.
+Budget with `estimate_memory_gb()` before launching, and expect to need
+`kernel_mode='onthefly'` and/or coarser bands.
+
 ### Sign conventions
 
 The HEALPix E-mode sign convention `a_E = -Re(...)` is handled in the TE block. Earlier versions had **incorrect signs in TB kernels** — this was fixed after MC verification in `derivations/verify_eb_tb.py`.
