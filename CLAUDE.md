@@ -76,6 +76,7 @@ python3 tests/test_full_sky_tt.py      # TT-only regression tests
 python3 tests/test_covariance_exact.py # Exact audit: every spectrum type vs the true covariance
 python3 tests/test_eb_normalization.py # EB normalization and ordered-pair regression tests
 python3 tests/test_newton_failure.py   # Newton-Raphson failure reporting
+python3 tests/test_teb_multibin_recovery.py  # End-to-end TEB multi-bin recovery (~1 min)
 ```
 
 Individual tests are numbered functions in `test_general.py`:
@@ -161,32 +162,41 @@ Those `Kp` terms cancel in `g + gᵀ`, which is why the auto-bin kernel involves
 
 **Still never run:** the `run_bjk_nmt.py` `--include-eb` wiring for multi-bin crashed with OOM before completing a Newton iteration, and the RR2 6-bin case has never been run. The n_P>1 EB path is now believed correct (exact to ~4×10⁻¹⁵ at n_P=2 in `tests/test_eb_normalization.py`) but has no end-to-end validation on real data.
 
-### ⚠️ DEFERRED: multi-bin (n_P > 1) EB has never been validated end-to-end
+### Multi-bin (n_P > 1): validated on sims, not yet on real data
 
-**Status as of 10 Aug 2026: deliberately held, not forgotten.** Do not quote a
-multi-bin EB result without doing this first.
+**Updated 10 Aug 2026 — the closed-loop validation is now DONE.**
+`tests/test_teb_multibin_recovery.py` fits n_T=2, n_P=2 with TB and EB over 24
+realizations (~1 min): all fits converge, overall rms pull 0.958 over 504
+pulls, and every family's fitted normalization α is consistent with 1 (worst
+−1.6σ) where a 2× error would show at +13 to +39σ. The truth uses
+`C^{E0B1} = +0.30` vs `C^{E1B0} = −0.12` — opposite signs — so the ordered-pair
+structure is genuinely exercised. Deliberate mis-index mappings are all
+rejected (TE transposed Δχ²=+113, EB transposed +412, P-bin swap +1955,
+EE↔BB +6097), which is what establishes that the 21 spectra are distinct enough
+for a wiring error to be visible at all.
 
-What is already established:
-- The n_P>1 EB kernels are **exact against the true covariance** — verified at
-  n_P=2, including asymmetric `C^{E0B1} ≠ C^{E1B0}`, to ~4×10⁻¹⁵
-  (`tests/test_covariance_exact.py`, `tests/test_eb_normalization.py`).
-- That is a *covariance* check. There is no end-to-end check that a multi-bin
-  EB **fit** recovers known inputs, and none on real data.
+What that configuration proves: BJK's 21 pair-parameters are exactly the 21
+independent entries of the 6×6 field covariance over (T0,T1,E0,B0,E1,B1), so
+the model is a *complete* parameterization of the simulation — there is nothing
+the truth can contain that the fit cannot represent.
 
-What is missing, in order:
-1. A closed-loop sim with n_P=2 and a **known, asymmetric** EB cross-spectrum
-   (`C^{E_0B_1} ≠ C^{E_1B_0}`), fitted end-to-end, pulls checked against the
-   unscaled truth. This is the multi-bin analogue of
-   `sim_runs/sim_eb_nside64_fsky01`, which caught the factor-2 error at n_P=1.
-   Nothing smaller will do: the ordered-pair structure is exactly what an
-   auto-bin-only or symmetric-input test cannot see.
-2. Only then, the RR2 6-bin case (`run_bjk_nmt.py --include-eb`), which has
-   **never completed** — it OOM'd before finishing a single Newton iteration.
+**What remains:** no multi-bin run on real data, at realistic NSIDE/fsky.
 
-Memory warning for step 2: EB now uses ordered pairs, so the EB parameter count
-grew from `n_P(n_P+1)/2` to `n_P²` — at n_P=6 that is 21 → 36 EB pairs, i.e.
-~70% more EB kernels than the configuration that already ran out of memory.
-Budget with `estimate_memory_gb()` before launching, and expect to need
+Established:
+- Kernels **exact against the true covariance** at n_P=2, including asymmetric
+  `C^{E0B1} ≠ C^{E1B0}`, to ~4×10⁻¹⁵ (`tests/test_covariance_exact.py`,
+  `tests/test_eb_normalization.py`).
+- **Fits recover known inputs** end-to-end (`tests/test_teb_multibin_recovery.py`,
+  above). Both the covariance and the fit are now covered.
+
+Still missing: the RR2 6-bin case (`run_bjk_nmt.py --include-eb`), which has
+**never completed** — it OOM'd before finishing a single Newton iteration, and
+that was at NSIDE=128/fsky≈0.01, far beyond the NSIDE=4 validation above.
+
+Memory warning: EB now uses ordered pairs, so the EB parameter count grew from
+`n_P(n_P+1)/2` to `n_P²` — at n_P=6 that is 21 → 36 EB pairs, i.e. ~70% more EB
+kernels than the configuration that already ran out of memory. Budget with
+`estimate_memory_gb()` before launching, and expect to need
 `kernel_mode='onthefly'` and/or coarser bands.
 
 ### Sign conventions
