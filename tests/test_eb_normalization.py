@@ -217,12 +217,116 @@ def test_nonzero_eb_recovery():
               f"pull = {pulls[spec]:+.2f}")
 
 
+# ===========================================================================
+# Test 3: cross-bin EB, n_P = 2, with C^{E0B1} != C^{E1B0}
+# ===========================================================================
+
+def test_crossbin_eb_ordered_pairs():
+    """EB cross-bin spectra are independent under i<->j exchange.
+
+    Guards the second half of the Aug 2026 fix: EB used UNORDERED pairs, so a
+    single parameter had to stand for both C^{E0B1} and C^{E1B0}.  Both land in
+    the same (0,1) covariance block, so the symmetrized kernel could only carry
+    their sum -- the fit returned their average and the antisymmetric part was
+    unmodelled (71% shape residual, removable by no choice of parameter).
+    """
+    print("\nTest 3: cross-bin EB with ordered pairs (n_P=2)")
+
+    nside, lmin, lmax = 4, 2, 7
+    npix = hp.nside2npix(nside)
+    n2, nd = 2 * npix, 4 * npix
+    sz = hp.Alm.getsize(lmax)
+    zero = np.zeros(sz, dtype=complex)
+    fields = ['E0', 'B0', 'E1', 'B1']
+
+    # basis maps over (Q0,U0,Q1,U1)
+    Bmap = {}
+    for l in range(lmin, lmax + 1):
+        for m in range(l + 1):
+            for part in (['re'] if m == 0 else ['re', 'im']):
+                for f in fields:
+                    a = np.zeros(sz, dtype=complex)
+                    a[hp.Alm.getidx(lmax, l, m)] = 1.0 if part == 're' else 1.0j
+                    almE, almB = (a, zero) if f[0] == 'E' else (zero, a)
+                    _, Q, U = hp.alm2map([zero, almE, almB], nside=nside, lmax=lmax)
+                    v = np.zeros(nd)
+                    k = int(f[1])
+                    v[k * n2:k * n2 + npix] = Q
+                    v[k * n2 + npix:(k + 1) * n2] = U
+                    Bmap[(l, m, part, f)] = v
+
+    def exact_cov(S):
+        cov = np.zeros((nd, nd))
+        for l in range(lmin, lmax + 1):
+            for m in range(l + 1):
+                parts = ['re'] if m == 0 else ['re', 'im']
+                w = 1.0 if m == 0 else 0.5
+                for part in parts:
+                    for fa in fields:
+                        for fb in fields:
+                            c = S.get((fa, fb), 0.0)
+                            if c != 0.0:
+                                cov += w * c * np.outer(Bmap[(l, m, part, fa)],
+                                                        Bmap[(l, m, part, fb)])
+        return cov
+
+    rng = np.random.default_rng(0)
+    s = 1e-3
+    Np = np.full(npix, s ** 2 * 4 * np.pi / npix)
+    lik = PixelLikelihood.from_arrays(
+        d_T_list=[],
+        d_Q_list=[rng.standard_normal(npix) * s, rng.standard_normal(npix) * s],
+        d_U_list=[rng.standard_normal(npix) * s, rng.standard_normal(npix) * s],
+        obs_pix=np.arange(npix), nside=nside,
+        N_T_list=[], N_Q_list=[Np, Np], N_U_list=[Np, Np],
+        lmin=lmin, lmax=lmax, band_edges=np.array([lmin, lmax + 1]),
+        band_model='Cl', include_EB=True)
+
+    n_eb = sum(1 for _, spec, _, _, _ in lik.layout.entries() if spec == 'EB')
+    print(f"    EB parameters for n_P=2: {n_eb}  (4 = ordered, 3 = the old bug)")
+    check("EB uses ordered pairs (n_P^2)", n_eb == 4, f"got {n_eb}")
+
+    def bjk(**kw):
+        p = np.zeros(lik.layout.n_params)
+        for key, val in kw.items():
+            p[lik.layout.index('EB', int(key[2]), int(key[3]), 0)] = val
+        return lik.build_signal_cov(p)
+
+    c = 0.5e-6
+    cases = [
+        ("C^E0B1 = c, C^E1B0 = 0   ", {('E0', 'B1'): c}, dict(eb01=c)),
+        ("C^E0B1 = 0, C^E1B0 = c   ", {('B0', 'E1'): c}, dict(eb10=c)),
+        ("C^E0B1 = c, C^E1B0 = -c/3", {('E0', 'B1'): c, ('B0', 'E1'): -c / 3},
+         dict(eb01=c, eb10=-c / 3)),
+        ("auto-bin C^E0B0 = c      ", {('E0', 'B0'): c}, dict(eb00=c)),
+    ]
+    for label, spec_entries, params in cases:
+        S = {}
+        for (fa, fb), val in spec_entries.items():
+            S[(fa, fb)] = S[(fb, fa)] = val
+        r = rel_rms(bjk(**params), exact_cov(S))
+        print(f"    {label}:  rel residual = {r:.3e}")
+        check(f"exact: {label.strip()}", r < 1e-10, f"{r:.3e}")
+
+    # The asymmetric case must NOT be reproducible by the old symmetrized kernel
+    S = {('E0', 'B1'): c, ('B1', 'E0'): c}
+    ex = exact_cov(S)
+    sym = 0.5 * (bjk(eb01=1.0) + bjk(eb10=1.0))     # the old, symmetrized model
+    best = np.dot(sym.ravel(), ex.ravel()) / np.dot(sym.ravel(), sym.ravel())
+    r_old = rel_rms(best * sym, ex)
+    print(f"    old symmetrized kernel, best-fit amplitude {best/c:.3f}*c: "
+          f"residual {r_old:.3f}  (cannot be removed)")
+    check("asymmetric case is genuinely outside the old model", r_old > 0.5,
+          f"{r_old:.3f}")
+
+
 if __name__ == '__main__':
     print("=" * 70)
     print("EB normalization regression tests")
     print("=" * 70)
     test_exact_covariance_normalization()
     test_nonzero_eb_recovery()
+    test_crossbin_eb_ordered_pairs()
     print()
     if _FAILURES:
         print(f"{FAIL}: {len(_FAILURES)} check(s) failed: {', '.join(_FAILURES)}")

@@ -139,10 +139,22 @@ The error survived every previous check because value and error scaled together,
 
 Root cause: `derivations/verify_eb_tb.py` fitted the kernel prefactor against a target that had been divided by an extra 2 (now corrected in that script).
 
-### Multi-field EB support — INCOMPLETE for n_P > 1
-Two separate issues:
-1. **Under-parameterized** (`SpectraLayout.__init__`, the `_pairs['EB']` line): `C^{E_i B_j}` and `C^{E_j B_i}` are *independent* spectra, but EB uses unordered pairs (`n_P(n_P+1)/2`) like EE/BB. Both orderings land in the same (i,j) covariance block, so the single symmetric kernel carries only their sum: the fitted parameter is `(C^{E_iB_j} + C^{E_jB_i})/2` and the antisymmetric part is unmodelled (verified exactly at n_P=2 — the asymmetric case has a 71% shape residual no parameter value can remove). A correct model needs ordered pairs (`n_P²`, as TE/TB already use) with a single-ordering kernel. **n_P=1 is exact and unaffected.**
-2. **Never run**: the `run_bjk_nmt.py` `--include-eb` wiring for multi-bin crashed with OOM before completing a Newton iteration; the RR2 6-bin case has never been run. Single-field cases (TT, EE/BB, and EE/BB/EB at n_P=1) are production-ready.
+### EB uses ORDERED pairs (fixed 10 Aug 2026)
+
+`C^{E_i B_j}` and `C^{E_j B_i}` are **independent** spectra. EB previously used unordered pairs (`n_P(n_P+1)/2`) like EE/BB, giving one parameter where physics has two; since both orderings contribute to the same (i,j) covariance block, the symmetric kernel could only carry their sum, so the fit returned `(C^{E_iB_j} + C^{E_jB_i})/2` with the antisymmetric part unmodelled.
+
+EB now uses ordered pairs (`n_P²`, as TE/TB always have), and pair `(i,j)` means `C^{E_i B_j}`. `SpectraLayout.index()` no longer sorts `(i,j)` for EB. The (i,j) block gets the single-ordering kernel `_eb_kernel_ordered` (`g`) and the (j,i) block gets `gᵀ`; for `i == j` both land in one block and sum to `_eb_kernel` = `g + gᵀ`.
+
+`g` is **not symmetric** — its antisymmetric part is carried entirely by the `Kp` difference-angle terms:
+```
+g_QQ = -Km·sin2sp - Kp·sin2dp     g_QU = +Km·cos2sp + Kp·cos2dp
+g_UQ = +Km·cos2sp - Kp·cos2dp     g_UU = +Km·sin2sp - Kp·sin2dp
+```
+Those `Kp` terms cancel in `g + gᵀ`, which is why the auto-bin kernel involves only `Km` and why they went unnoticed: they are invisible whenever `i = j`.
+
+**n_P=1 is unchanged by this** (`n_P² = n_P(n_P+1)/2 = 1`), so no existing result is affected. Note the parameter count grows for n_P>1: at n_P=6, EB goes from 21 to 36 pairs.
+
+**Still never run:** the `run_bjk_nmt.py` `--include-eb` wiring for multi-bin crashed with OOM before completing a Newton iteration, and the RR2 6-bin case has never been run. The n_P>1 EB path is now believed correct (exact to ~4×10⁻¹⁵ at n_P=2 in `tests/test_eb_normalization.py`) but has no end-to-end validation on real data.
 
 ### Sign conventions
 
@@ -187,8 +199,9 @@ The flat `cl_bands` parameter vector is ordered as:
 ```
 
 Within each group:
-- Pairs `(i,j)` are ordered with `i ≤ j` for auto-spectra (TT, EE, BB, EB) — note EB should use ordered pairs, see "Multi-field EB support" above
+- Pairs `(i,j)` are ordered with `i ≤ j` for the symmetric auto-spectra (TT, EE, BB)
 - For cross-spectra (TE, TB), all pairs `i ∈ [0,n_T)`, `j ∈ [0,n_P)` are included
+- **EB uses all ordered pairs** `i, j ∈ [0,n_P)` (`n_P²` of them): `(i,j)` means `C^{E_i B_j}`, which is independent of `C^{E_j B_i}`. `layout.index('EB', i, j, b)` does *not* sort `i,j`.
 - Within each pair, bands run `b ∈ [0, nbands)`
 
 Use `lik.layout` to decode indices.

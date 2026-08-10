@@ -29,7 +29,8 @@ Bandpower parameter vector (flat, length n_params):
   TB pairs  (if include_TB): n_T*n_P pairs
   EE pairs  (i,j), i<=j   : n_P*(n_P+1)/2 pairs
   BB pairs  (i,j), i<=j   : n_P*(n_P+1)/2 pairs
-  EB pairs  (if include_EB): n_P*(n_P+1)/2 pairs
+  EB pairs  (if include_EB): n_P*n_P pairs, ORDERED -- (i,j) is C^{E_i B_j},
+                             which is independent of C^{E_j B_i}
 Each group repeated for nbands, so parameter layout is:
   [TT(0,0,0), TT(0,0,1), ..., TT(0,0,nb-1),  TT(0,1,0), ...,  TE(0,0,0), ...]
 
@@ -395,6 +396,36 @@ def _bb_kernel(Kp_b, Km_b, geom):
     return np.block([[QQ, QU], [QU.T, UU]])
 
 
+def _eb_kernel_ordered(Kp_b, Km_b, geom):
+    """Single-ordering EB kernel g = <x_E x_B^T> / C^EB, shape (2n, 2n),
+    where x = (Q, U).  This is the covariance contributed by ONE ordering of
+    the fields, i.e. d(<x_i x_j^T>)/d(C^{E_i B_j}).
+
+    g is NOT symmetric.  Its antisymmetric part is carried entirely by the
+    Kp (d^l_{2,+2}) DIFFERENCE-angle terms, which cancel in g + g^T:
+
+        g_QQ = -Km sin2sp - Kp sin2dp      g_QU = +Km cos2sp + Kp cos2dp
+        g_UQ = +Km cos2sp - Kp cos2dp      g_UU = +Km sin2sp - Kp sin2dp
+
+    (sin2dp is antisymmetric under pixel exchange, cos2dp and the sum-angle
+    factors are symmetric).  That cancellation is why the auto-bin kernel
+    involves only Km, and why the Kp terms went unnoticed for so long: they are
+    invisible whenever i = j.
+
+    For i != j, C^{E_i B_j} and C^{E_j B_i} are INDEPENDENT spectra whose
+    contributions both land in the (i,j) covariance block, so they can only be
+    told apart through this antisymmetric part.
+
+    Verified to machine precision in tests/test_eb_normalization.py.
+    """
+    cos2dp, sin2dp, cos2sp, sin2sp, _, _ = geom
+    QQ = -Km_b * sin2sp - Kp_b * sin2dp
+    QU =  Km_b * cos2sp + Kp_b * cos2dp
+    UQ =  Km_b * cos2sp - Kp_b * cos2dp
+    UU =  Km_b * sin2sp - Kp_b * sin2dp
+    return np.block([[QQ, QU], [UQ, UU]])
+
+
 def _eb_kernel(Km_b, geom):
     """EB derivative kernel: d(C_PP)/d(C^EB_b), shape (2n, 2n).
 
@@ -410,6 +441,9 @@ def _eb_kernel(Km_b, geom):
     invisible to null tests because value and error scaled together).  Verified
     to machine precision against the exact alm->map covariance in
     tests/test_eb_normalization.py.
+
+    Equals _eb_kernel_ordered(Kp, Km, geom) + its transpose; the Kp terms
+    cancel in that sum, which is why only Km appears here.
     """
     _, _, cos2sp, sin2sp, _, _ = geom
     QQ = -2.0 * Km_b * sin2sp
@@ -452,15 +486,13 @@ class SpectraLayout:
         self._pairs['TB'] = [(i, j) for i in range(n_T) for j in range(n_P)] if include_TB else []
         self._pairs['EE'] = [(i, j) for i in range(n_P) for j in range(i, n_P)]
         self._pairs['BB'] = [(i, j) for i in range(n_P) for j in range(i, n_P)]
-        # INCOMPLETE for n_P > 1: C^{E_i B_j} and C^{E_j B_i} are INDEPENDENT
-        # spectra, but unordered pairs give only one parameter for the two, and
-        # both of their contributions land in the same (i,j) covariance block.
-        # The single symmetric kernel can carry only their sum, so the fitted
-        # parameter is (C^{E_iB_j} + C^{E_jB_i})/2 and the antisymmetric part is
-        # unmodelled.  Correct requires ordered pairs (n_P^2, as TE/TB above)
-        # plus a single-ordering kernel in _build_kernel.  Exact at n_P=1, which
-        # is all that has been run.  See tests/test_eb_normalization.py.
-        self._pairs['EB'] = [(i, j) for i in range(n_P) for j in range(i, n_P)] if include_EB else []
+        # EB uses ORDERED pairs (n_P^2), unlike EE/BB: C^{E_i B_j} and
+        # C^{E_j B_i} are independent spectra, not two names for one number.
+        # Both contribute to the same (i,j) covariance block and are told apart
+        # only by the antisymmetric part of the single-ordering kernel -- see
+        # _eb_kernel_ordered.  Pair (i, j) means C^{E_i B_j}.  (Before Aug 2026
+        # this used unordered pairs, which silently fitted their average.)
+        self._pairs['EB'] = [(i, j) for i in range(n_P) for j in range(n_P)] if include_EB else []
 
         # Group offsets in the flat vector
         order = ['TT', 'TE', 'TB', 'EE', 'BB', 'EB']
@@ -486,8 +518,9 @@ class SpectraLayout:
 
     def index(self, spec, i, j, b):
         """Return flat index for (spec, bin_i, bin_j, band_b).
-        For symmetric specs (TT, EE, BB, EB) i<=j is enforced automatically."""
-        if spec in ('TT', 'EE', 'BB', 'EB'):
+        For symmetric specs (TT, EE, BB) i<=j is enforced automatically.
+        EB is NOT symmetric under i<->j: (i,j) means C^{E_i B_j}."""
+        if spec in ('TT', 'EE', 'BB'):
             i, j = min(i, j), max(i, j)
         pairs = self._pairs[spec]
         pair_idx = pairs.index((i, j))
@@ -1005,11 +1038,17 @@ class PixelLikelihood:
                 K[sk, sj] = blk.T
 
         elif spec == 'EB':
+            # Pair (i, j) is C^{E_i B_j}: the E field in bin i, B in bin j.
+            # Its contribution to the (i,j) block is the single-ordering kernel
+            # g, and to the (j,i) block g^T.  For i == j both land in the same
+            # block and sum to g + g^T == _eb_kernel(Km, geom).
             sj = self._P_slice(i)
             sk = self._P_slice(j)
-            blk = _eb_kernel(self._Km[b], geom)
-            K[sj, sk] = blk
-            if i != j:
+            if i == j:
+                K[sj, sj] = _eb_kernel(self._Km[b], geom)
+            else:
+                blk = _eb_kernel_ordered(self._Kp[b], self._Km[b], geom)
+                K[sj, sk] = blk
                 K[sk, sj] = blk.T
 
         return K
