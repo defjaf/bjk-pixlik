@@ -73,6 +73,11 @@ def synfast_TP(nside, cl_TT, cl_EE, cl_BB, cl_TE, seed=0):
     lmax = len(cl_TT) - 1
     # hp.synfast expects [TT, EE, BB, TE] as first four entries
     cls = np.array([cl_TT[:lmax+1], cl_EE[:lmax+1], cl_BB[:lmax+1], cl_TE[:lmax+1]])
+    # hp.synfast draws from numpy's LEGACY global RNG, so it needs
+    # np.random.seed -- the default_rng above seeds only the noise.  Without
+    # this the SIGNAL realization changed every run, making the single-
+    # realization 3-sigma recovery checks (tests 6-8) intermittently fail.
+    np.random.seed(seed)
     T, Q, U = hp.synfast(cls, nside=nside, lmax=lmax, new=True,
                          verbose=False, pol=True)
     # Add noise

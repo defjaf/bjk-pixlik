@@ -62,7 +62,12 @@ ell_b      = BAND_EDGES[:-1].astype(float)        # [2,3,...,15]
 nbands     = len(ell_b)
 
 # ---------------------------------------------------------------------------
-# Simulate data (fixed seed)
+# Simulate data (fixed seed).
+# hp.synalm draws from numpy's LEGACY global RNG, so it needs np.random.seed --
+# the default_rng below seeds only the noise.  Without this the signal
+# realization changed every run, and the tight BJK-vs-NaMaster tolerance below
+# failed intermittently.
+np.random.seed(42)
 rng       = np.random.default_rng(42)
 alm_sig   = hp.synalm(cl_signal, lmax=LMAX)
 sig_map   = hp.alm2map(alm_sig, NSIDE, lmax=LMAX)
