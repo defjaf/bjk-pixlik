@@ -58,9 +58,20 @@ Complexity per Newton-Raphson iteration: O(n_params * N_d^3) dominated by the
 triangular solves to form A_b = L^{-1} K_b (L^{-1})^T for each kernel K_b.
 """
 
+import warnings
+
 import numpy as np
 import healpy as hp
 from scipy.linalg import solve_triangular
+
+
+class NewtonRaphsonError(RuntimeError):
+    """Newton-Raphson produced no usable ML estimate.
+
+    Raised when the iteration never accepted a step, so the returned
+    bandpowers would be the starting vector rather than an estimate.  See
+    PixelLikelihood.newton_raphson(strict=...).
+    """
 
 
 # ===========================================================================
@@ -1155,16 +1166,49 @@ class PixelLikelihood:
 
         return g, F
 
-    def newton_raphson(self, cl_init, max_iter=15, tol=1e-4, damp=1.0):
+    def newton_raphson(self, cl_init, max_iter=15, tol=1e-4, damp=1.0,
+                       strict=True, max_backtrack=10, logL_eps=1e-6):
         """
         Newton-Raphson for ML bandpowers with backtracking line search.
 
         cl_init : flat array length layout.n_params
+        strict  : raise NewtonRaphsonError if no usable estimate was produced
+                  (default True).  With strict=False the same conditions issue
+                  a RuntimeWarning and the (unusable) values are returned.
+        max_backtrack : halvings tried per iteration before giving up.
+        logL_eps : a failed line search whose best trial is within this of the
+                  current logL counts as convergence, not failure -- Newton has
+                  simply stopped improving the likelihood at double precision.
+
         Returns (cl_ml, sigma, F) where sigma = sqrt(diag(F^{-1})).
+
+        On return, `self.nr_info` holds a dict describing the outcome:
+          status    : 'converged' | 'max_iter' | 'stalled'
+                      | 'no_progress' | 'singular'
+          converged : bool
+          n_accepted: number of accepted steps (0 means cl_ml IS cl_init)
+          last_step : final max|delta/C|
+          logL      : final log-likelihood
+
+        WHY strict DEFAULTS TO True: this routine used to return cl_init
+        together with a plausible-looking sigma whenever the first iteration
+        failed, so a downstream pull table looked reasonable while containing
+        nothing but the starting guess.  A silent wrong answer is the worst
+        failure mode for an estimator; refusing to return one is cheap.
         """
         cl = np.array(cl_init, dtype=float)
         logL_best = self.log_likelihood(cl)
         print(f"\nNewton-Raphson ({len(cl)} parameters, max_iter={max_iter})")
+
+        n_accepted = 0
+        step = np.inf
+        status = 'max_iter'
+
+        if not np.isfinite(logL_best):
+            status = 'singular'
+            print("  initial bandpowers give a non-positive-definite M "
+                  "(logL = -inf)")
+            max_iter = 0
 
         for it in range(max_iter):
             try:
@@ -1172,27 +1216,43 @@ class PixelLikelihood:
                 delta = np.linalg.solve(F, g)
             except np.linalg.LinAlgError as e:
                 print(f"  iter {it+1}: stopping ({e})")
+                status = 'singular' if n_accepted == 0 else 'stalled'
                 break
 
             # Backtracking line search: try damp, damp/2, damp/4, ...
             alpha = damp
-            for _ in range(5):
+            logL_try_best = -np.inf
+            for _ in range(max_backtrack):
                 cl_new = cl + alpha * delta
                 logL_new = self.log_likelihood(cl_new)
+                if np.isfinite(logL_new):
+                    logL_try_best = max(logL_try_best, logL_new)
                 if np.isfinite(logL_new) and logL_new > logL_best:
                     break
                 alpha *= 0.5
             else:
-                # No improvement found
-                print(f"  iter {it+1}: no finite improvement, stopping")
+                # No improvement found.  If the best trial got within logL_eps
+                # of where we already are, we are at the top and the line
+                # search is fighting round-off -- that is convergence, not
+                # failure.  Otherwise it is a genuine stall.
+                if np.isfinite(logL_try_best) and \
+                        (logL_best - logL_try_best) < logL_eps:
+                    status = 'converged'
+                    print(f"  iter {it+1}: no further improvement "
+                          f"(< {logL_eps:g} in logL); converged.")
+                else:
+                    status = 'no_progress' if n_accepted == 0 else 'stalled'
+                    print(f"  iter {it+1}: no finite improvement, stopping")
                 break
 
             step = np.max(np.abs(alpha * delta) / (np.abs(cl) + 1e-40))
             print(f"  iter {it+1}: logL={logL_new:.4f}  max|δ/C|={step:.2e}")
             cl = cl_new
             logL_best = logL_new
+            n_accepted += 1
 
             if step < tol:
+                status = 'converged'
                 print("  Converged.")
                 break
 
@@ -1202,6 +1262,34 @@ class PixelLikelihood:
         except np.linalg.LinAlgError:
             sigma = np.full(len(cl), np.nan)
             F = np.full((len(cl), len(cl)), np.nan)
+            if status == 'converged':
+                status = 'singular'
+
+        self.nr_info = {
+            'status': status,
+            'converged': status == 'converged',
+            'n_accepted': n_accepted,
+            'last_step': step,
+            'logL': logL_best,
+        }
+
+        # 'no_progress'/'singular' mean cl_ml is just cl_init: not an estimate.
+        if status in ('no_progress', 'singular'):
+            msg = (f"Newton-Raphson produced no usable estimate "
+                   f"(status={status!r}, accepted steps={n_accepted}). "
+                   f"The returned bandpowers are the STARTING VECTOR, not an "
+                   f"ML estimate, and the returned sigma is meaningless. "
+                   f"Try a better starting point (e.g. a pseudo-C_l estimate) "
+                   f"or check that the noise/covariance is positive definite.")
+            if strict:
+                raise NewtonRaphsonError(msg)
+            warnings.warn(msg, RuntimeWarning, stacklevel=2)
+        elif status != 'converged':
+            warnings.warn(
+                f"Newton-Raphson did not converge (status={status!r}, "
+                f"accepted steps={n_accepted}, last max|delta/C|={step:.2e} "
+                f"vs tol={tol:g}). The estimate may be unreliable.",
+                RuntimeWarning, stacklevel=2)
 
         return cl, sigma, F
 

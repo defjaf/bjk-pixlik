@@ -75,6 +75,7 @@ python3 tests/test_general.py          # Multi-field unit tests (gradient FD che
 python3 tests/test_full_sky_tt.py      # TT-only regression tests
 python3 tests/test_covariance_exact.py # Exact audit: every spectrum type vs the true covariance
 python3 tests/test_eb_normalization.py # EB normalization and ordered-pair regression tests
+python3 tests/test_newton_failure.py   # Newton-Raphson failure reporting
 ```
 
 Individual tests are numbered functions in `test_general.py`:
@@ -186,6 +187,15 @@ The HEALPix E-mode sign convention `a_E = -Re(...)` is handled in the TE block. 
    cl_init = np.full(lik.layout.n_params, 1e-4)
    cl_ml, sigma, F = lik.newton_raphson(cl_init, max_iter=20)
    ```
+
+   `newton_raphson` raises `NewtonRaphsonError` if it never accepts a step
+   (i.e. the result would be `cl_init` itself). Pass `strict=False` to downgrade
+   that to a `RuntimeWarning`. Non-convergence within `max_iter` always warns.
+   After any call, `lik.nr_info` holds `{status, converged, n_accepted,
+   last_step, logL}`; `n_accepted == 0` means no fit happened.
+
+   A good starting point matters when bandpowers span decades (e.g. EE vs BB):
+   a flat start can stall. A pseudo-C_ℓ estimate works well.
 
 3. **Access results**:
    - `cl_ml`: ML bandpower vector (flat, ordered by `lik.layout`)
